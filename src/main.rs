@@ -56,7 +56,7 @@ fn run() -> errors::Result<i32> {
         let path = Path::new(input_path);
         if !path.exists() {
             return Err(RedactError::Usage(format!(
-                "Input path '{}' does not exist.\n  redact redact --input <PATH>",
+                "Input path '{}' does not exist.\n  redacted --input <PATH>",
                 input_path
             )));
         }
@@ -81,10 +81,10 @@ fn run() -> errors::Result<i32> {
 
     Err(RedactError::Usage(
         "No input provided. Use --text, --input, or pipe stdin.\n\n  \
-         echo \"secret text\" | redact redact\n  \
-         redact redact --text \"my secret text\"\n  \
-         redact redact --input <PATH>\n  \
-         redact redact --help"
+         echo \"secret text\" | redacted\n  \
+         redacted --text \"my secret text\"\n  \
+         redacted --input <PATH>\n  \
+         redacted --help"
             .into(),
     ))
 }
@@ -256,8 +256,8 @@ fn process_directory(
     if config.output.is_none() && !config.dry_run && !config.summary && !config.report_json {
         return Err(RedactError::Usage(
             "Directory input requires --output <DIR>, --dry-run, --summary, or --report-json.\n  \
-             redact redact --input logs/ --output cleaned/\n  \
-             redact redact --input logs/ --dry-run"
+             redacted --input logs/ --output cleaned/\n  \
+             redacted --input logs/ --dry-run"
                 .into(),
         ));
     }

@@ -76,14 +76,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn print_help() {
     eprintln!(
-        r#"redact {version} — Redact secrets and PII from text and files.
+        r#"redacted {version} — Redact secrets and PII from text and files.
 
 USAGE:
-  redact redact [OPTIONS]
-  echo "secret text" | redact redact
-  redact redact --text "email me at user@example.com"
-  redact redact --input secrets.txt
-  redact redact --input logs/ --output cleaned/
+  redacted [OPTIONS]
+  echo "secret text" | redacted
+  redacted --text "email me at user@example.com"
+  redacted --input secrets.txt
+  redacted --input logs/ --output cleaned/
 
 INPUT (resolved in this order):
   --text <TEXT>         Literal text to redact
@@ -129,18 +129,18 @@ EXIT CODES:
   3   Findings detected (with --fail-on-find)
 
 EXAMPLES:
-  echo "token=sk_live_abc123" | redact redact
-  redact redact --text "email me at user@example.com"
-  redact redact --input secrets.txt --output redacted.txt
-  redact redact --input logs/ --output cleaned/ --summary
-  redact redact --input .env --fail-on-find --dry-run
-  redact redact --input repo/ --output repo-clean/ --report-json"#,
+  echo "token=sk_live_abc123" | redacted
+  redacted --text "email me at user@example.com"
+  redacted --input secrets.txt --output redacted.txt
+  redacted --input logs/ --output cleaned/ --summary
+  redacted --input .env --fail-on-find --dry-run
+  redacted --input repo/ --output repo-clean/ --report-json"#,
         version = VERSION,
     );
 }
 
 pub fn print_version() {
-    eprintln!("redact {}", VERSION);
+    eprintln!("redacted {}", VERSION);
 }
 
 /// Hand-rolled argument parser. No external dependencies.
@@ -153,11 +153,6 @@ pub fn parse_args() -> Result<CliArgs> {
 pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     let mut cli = CliArgs::default();
     let mut i = 0;
-
-    // Skip the "redact" subcommand if present
-    if i < args.len() && args[i] == "redact" {
-        i += 1;
-    }
 
     while i < args.len() {
         let arg = &args[i];
@@ -216,7 +211,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                     "json" => OutputFormat::Json,
                     other => {
                         return Err(RedactError::Usage(format!(
-                            "Unknown format '{}'. Expected: text, json\n  redact redact --format text",
+                            "Unknown format '{}'. Expected: text, json\n  redacted --format text",
                             other
                         )));
                     }
@@ -235,7 +230,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                     "best-effort" => BinaryMode::BestEffort,
                     other => {
                         return Err(RedactError::Usage(format!(
-                            "Unknown binary mode '{}'. Expected: skip, fail, best-effort\n  redact redact --binary skip",
+                            "Unknown binary mode '{}'. Expected: skip, fail, best-effort\n  redacted --binary skip",
                             other
                         )));
                     }
@@ -246,7 +241,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                 let val = require_value(args, i, "--max-file-size")?;
                 cli.max_file_size = val.parse::<u64>().map_err(|_| {
                     RedactError::Usage(format!(
-                        "Invalid max-file-size '{}'. Expected a number in bytes.\n  redact redact --max-file-size 26214400",
+                        "Invalid max-file-size '{}'. Expected a number in bytes.\n  redacted --max-file-size 26214400",
                         val
                     ))
                 })?;
@@ -259,14 +254,14 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                 let val = require_value(args, i, "--threads")?;
                 cli.threads = Some(val.parse::<usize>().map_err(|_| {
                     RedactError::Usage(format!(
-                        "Invalid threads '{}'. Expected a positive integer.\n  redact redact --threads 4",
+                        "Invalid threads '{}'. Expected a positive integer.\n  redacted --threads 4",
                         val
                     ))
                 })?);
             }
             other => {
                 return Err(RedactError::Usage(format!(
-                    "Unknown argument '{}'\n  redact redact --help",
+                    "Unknown argument '{}'\n  redacted --help",
                     other
                 )));
             }
@@ -280,7 +275,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
 fn require_value(args: &[String], i: usize, flag: &str) -> Result<String> {
     if i >= args.len() {
         return Err(RedactError::Usage(format!(
-            "Flag '{}' requires a value.\n  redact redact {} <VALUE>",
+            "Flag '{}' requires a value.\n  redacted {} <VALUE>",
             flag, flag
         )));
     }
@@ -293,13 +288,13 @@ fn parse_pattern_value(val: &str) -> Result<(String, String)> {
         let pat = val[idx + 1..].to_string();
         if name.is_empty() || pat.is_empty() {
             return Err(RedactError::Usage(
-                "Pattern must be NAME=REGEX, both non-empty.\n  redact redact --pattern MY_SECRET=sk_[a-zA-Z0-9]+".into(),
+                "Pattern must be NAME=REGEX, both non-empty.\n  redacted --pattern MY_SECRET=sk_[a-zA-Z0-9]+".into(),
             ));
         }
         Ok((name, pat))
     } else {
         Err(RedactError::Usage(format!(
-            "Pattern '{}' must be in NAME=REGEX format.\n  redact redact --pattern MY_SECRET=sk_[a-zA-Z0-9]+",
+            "Pattern '{}' must be in NAME=REGEX format.\n  redacted --pattern MY_SECRET=sk_[a-zA-Z0-9]+",
             val
         )))
     }
@@ -315,51 +310,50 @@ mod tests {
 
     #[test]
     fn parse_help() {
-        let cli = parse_args_from(&args(&["redact", "--help"])).unwrap();
+        let cli = parse_args_from(&args(&["--help"])).unwrap();
         assert!(cli.show_help);
     }
 
     #[test]
     fn parse_version() {
-        let cli = parse_args_from(&args(&["redact", "--version"])).unwrap();
+        let cli = parse_args_from(&args(&["--version"])).unwrap();
         assert!(cli.show_version);
     }
 
     #[test]
     fn parse_text_input() {
-        let cli = parse_args_from(&args(&["redact", "--text", "hello"])).unwrap();
+        let cli = parse_args_from(&args(&["--text", "hello"])).unwrap();
         assert_eq!(cli.text, Some("hello".into()));
     }
 
     #[test]
     fn parse_file_input() {
-        let cli =
-            parse_args_from(&args(&["redact", "--input", "f.txt", "--output", "o.txt"])).unwrap();
+        let cli = parse_args_from(&args(&["--input", "f.txt", "--output", "o.txt"])).unwrap();
         assert_eq!(cli.input, Some("f.txt".into()));
         assert_eq!(cli.output, Some("o.txt".into()));
     }
 
     #[test]
     fn parse_pattern() {
-        let cli = parse_args_from(&args(&["redact", "--pattern", "KEY=sk_[a-z]+"])).unwrap();
+        let cli = parse_args_from(&args(&["--pattern", "KEY=sk_[a-z]+"])).unwrap();
         assert_eq!(cli.patterns, vec![("KEY".into(), "sk_[a-z]+".into())]);
     }
 
     #[test]
     fn parse_binary_mode() {
-        let cli = parse_args_from(&args(&["redact", "--binary", "best-effort"])).unwrap();
+        let cli = parse_args_from(&args(&["--binary", "best-effort"])).unwrap();
         assert_eq!(cli.binary, BinaryMode::BestEffort);
     }
 
     #[test]
     fn missing_value_errors() {
-        let result = parse_args_from(&args(&["redact", "--text"]));
+        let result = parse_args_from(&args(&["--text"]));
         assert!(result.is_err());
     }
 
     #[test]
     fn unknown_arg_errors() {
-        let result = parse_args_from(&args(&["redact", "--banana"]));
+        let result = parse_args_from(&args(&["--banana"]));
         assert!(result.is_err());
     }
 

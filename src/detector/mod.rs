@@ -111,6 +111,7 @@ impl DetectorRegistry {
             Box::new(pii::Ipv6Detector),
             Box::new(pii::CreditCardDetector),
             Box::new(pii::SsnDetector),
+            Box::new(pii::PathDetector),
         ];
 
         for det in all_builtins {

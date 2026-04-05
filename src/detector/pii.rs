@@ -186,7 +186,7 @@ pub struct Ipv4Detector;
 
 impl Detector for Ipv4Detector {
     fn name(&self) -> &'static str {
-        "IPV4"
+        "IP"
     }
     fn category(&self) -> &'static str {
         "pii"
@@ -270,7 +270,7 @@ pub struct Ipv6Detector;
 
 impl Detector for Ipv6Detector {
     fn name(&self) -> &'static str {
-        "IPV6"
+        "IP"
     }
     fn category(&self) -> &'static str {
         "pii"
@@ -516,6 +516,122 @@ fn matches_ssn_pattern(bytes: &[u8], start: usize) -> bool {
         && !(b[7] == b'0' && b[8] == b'0' && b[9] == b'0' && b[10] == b'0')
 }
 
+// --- Filesystem Path Detector ---
+
+pub struct PathDetector;
+
+impl Detector for PathDetector {
+    fn name(&self) -> &'static str {
+        "PATH"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
+
+    fn detect(&self, text: &str) -> Vec<Finding> {
+        let bytes = text.as_bytes();
+        let mut findings = Vec::new();
+
+        let mut i = 0;
+        while i < bytes.len() {
+            // Absolute paths: /foo/bar, C:\foo\bar
+            // Relative paths: ./foo/bar, ../foo/bar
+            let is_path_start = match bytes[i] {
+                b'/' => {
+                    // Must be word boundary and not part of URL scheme (://)
+                    (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+                        && !(i > 0 && bytes[i - 1] == b':')
+                }
+                b'.' => {
+                    // ./path or ../path
+                    (i == 0
+                        || bytes[i - 1].is_ascii_whitespace()
+                        || bytes[i - 1] == b'='
+                        || bytes[i - 1] == b'"'
+                        || bytes[i - 1] == b'\'')
+                        && i + 1 < bytes.len()
+                        && (bytes[i + 1] == b'/'
+                            || (bytes[i + 1] == b'.'
+                                && i + 2 < bytes.len()
+                                && bytes[i + 2] == b'/'))
+                }
+                b'~' => {
+                    // ~/path
+                    (i == 0
+                        || bytes[i - 1].is_ascii_whitespace()
+                        || bytes[i - 1] == b'='
+                        || bytes[i - 1] == b'"'
+                        || bytes[i - 1] == b'\'')
+                        && i + 1 < bytes.len()
+                        && bytes[i + 1] == b'/'
+                }
+                _ => {
+                    // Windows: C:\ D:\
+                    bytes[i].is_ascii_alphabetic()
+                        && i + 2 < bytes.len()
+                        && bytes[i + 1] == b':'
+                        && bytes[i + 2] == b'\\'
+                        && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+                }
+            };
+
+            if is_path_start {
+                let end = scan_path(bytes, i);
+                let path_len = end - i;
+                // Require at least one separator beyond the root and minimum meaningful length
+                let segment = &bytes[i..end];
+                let slash_count = segment.iter().filter(|&&c| c == b'/' || c == b'\\').count();
+                if path_len >= 4 && slash_count >= 2 {
+                    findings.push(Finding {
+                        detector_name: self.name(),
+                        category: self.category(),
+                        start: i,
+                        end,
+                        confidence: if slash_count >= 3 {
+                            Confidence::High
+                        } else {
+                            Confidence::Medium
+                        },
+                        matched_len: path_len,
+                    });
+                    i = end;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        findings
+    }
+}
+
+fn scan_path(bytes: &[u8], start: usize) -> usize {
+    let mut pos = start;
+    let limit = std::cmp::min(bytes.len(), start + 4096);
+    while pos < limit {
+        let c = bytes[pos];
+        if c.is_ascii_alphanumeric()
+            || c == b'/'
+            || c == b'\\'
+            || c == b'.'
+            || c == b'-'
+            || c == b'_'
+            || c == b'~'
+            || c == b':'
+        {
+            pos += 1;
+        } else {
+            break;
+        }
+    }
+    // Trim trailing dots or separators
+    while pos > start
+        && (bytes[pos - 1] == b'/' || bytes[pos - 1] == b'\\' || bytes[pos - 1] == b'.')
+    {
+        pos -= 1;
+    }
+    pos
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,5 +735,76 @@ mod tests {
     #[test]
     fn luhn_invalid() {
         assert!(!luhn_check(b"1234567890123456"));
+    }
+
+    // --- Path detector tests ---
+
+    #[test]
+    fn detect_unix_absolute_path() {
+        let d = PathDetector;
+        let findings = d.detect("config at /etc/nginx/nginx.conf ok");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            &"config at /etc/nginx/nginx.conf ok"[findings[0].start..findings[0].end],
+            "/etc/nginx/nginx.conf"
+        );
+    }
+
+    #[test]
+    fn detect_home_path() {
+        let d = PathDetector;
+        let findings = d.detect("file: /home/user/.ssh/id_rsa");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_relative_path() {
+        let d = PathDetector;
+        let findings = d.detect("log at ./logs/app/server.log ok");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_parent_relative_path() {
+        let d = PathDetector;
+        let findings = d.detect("see ../config/app.toml");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_tilde_path() {
+        let d = PathDetector;
+        let findings = d.detect("check ~/Documents/secret.txt");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_windows_path() {
+        let d = PathDetector;
+        let findings = d.detect(r"file at C:\Users\admin\secret.txt");
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn no_false_positive_short_path() {
+        let d = PathDetector;
+        let findings = d.detect("use a/b for option");
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn no_false_positive_url_scheme() {
+        let d = PathDetector;
+        // The :// should prevent the path after it from being treated as a bare path
+        let findings = d.detect("visit https://example.com");
+        // Should not match the //example.com part as a path
+        for f in &findings {
+            let matched = &"visit https://example.com"[f.start..f.end];
+            assert!(
+                !matched.contains("example.com"),
+                "Should not match URL as path: {}",
+                matched
+            );
+        }
     }
 }

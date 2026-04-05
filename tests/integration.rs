@@ -6,7 +6,7 @@ fn binary_path() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop(); // remove test binary name
     path.pop(); // remove 'deps'
-    path.push("redact");
+    path.push("redacted");
     path
 }
 
@@ -58,7 +58,7 @@ fn temp_dir(name: &str) -> PathBuf {
 
 #[test]
 fn help_flag() {
-    let (_, stderr, code) = run(&["redact", "--help"]);
+    let (_, stderr, code) = run(&["--help"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("USAGE:"));
     assert!(stderr.contains("--input"));
@@ -67,16 +67,16 @@ fn help_flag() {
 
 #[test]
 fn version_flag() {
-    let (_, stderr, code) = run(&["redact", "--version"]);
+    let (_, stderr, code) = run(&["--version"]);
     assert_eq!(code, 0);
-    assert!(stderr.contains("redact 0.1.0"));
+    assert!(stderr.contains("redacted 0.1.0"));
 }
 
 // === Text Mode ===
 
 #[test]
 fn text_redacts_email() {
-    let (stdout, _, code) = run(&["redact", "--text", "email me at user@example.com please"]);
+    let (stdout, _, code) = run(&["--text", "email me at user@example.com please"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     assert!(!stdout.contains("user@example.com"));
@@ -84,22 +84,30 @@ fn text_redacts_email() {
 
 #[test]
 fn text_redacts_phone() {
-    let (stdout, _, code) = run(&["redact", "--text", "call +1-555-867-5309"]);
+    let (stdout, _, code) = run(&["--text", "call +1-555-867-5309"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:PHONE]"));
 }
 
 #[test]
 fn text_redacts_ipv4() {
-    let (stdout, _, code) = run(&["redact", "--text", "server 192.168.1.100"]);
+    let (stdout, _, code) = run(&["--text", "server 192.168.1.100"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("[REDACTED:IPV4]"));
+    assert!(stdout.contains("[REDACTED:IP]"));
     assert!(!stdout.contains("192.168.1.100"));
 }
 
 #[test]
+fn text_redacts_ipv6() {
+    let (stdout, _, code) = run(&["--text", "addr: 2001:0db8:85a3:0000:0000:8a2e:0370:7334"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[REDACTED:IP]"));
+    assert!(!stdout.contains("2001:0db8"));
+}
+
+#[test]
 fn text_redacts_aws_key() {
-    let (stdout, _, code) = run(&["redact", "--text", "key=AKIAIOSFODNN7EXAMPLE"]);
+    let (stdout, _, code) = run(&["--text", "key=AKIAIOSFODNN7EXAMPLE"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:AWS_KEY]"));
 }
@@ -107,7 +115,6 @@ fn text_redacts_aws_key() {
 #[test]
 fn text_redacts_jwt() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
     ]);
@@ -117,7 +124,7 @@ fn text_redacts_jwt() {
 
 #[test]
 fn text_redacts_stripe_key() {
-    let (stdout, _, code) = run(&["redact", "--text", "STRIPE_KEY=sk_live_abcdef1234567890"]);
+    let (stdout, _, code) = run(&["--text", "STRIPE_KEY=sk_live_abcdef1234567890"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:"));
     assert!(!stdout.contains("sk_live_abcdef1234567890"));
@@ -125,11 +132,7 @@ fn text_redacts_stripe_key() {
 
 #[test]
 fn text_redacts_github_token() {
-    let (stdout, _, code) = run(&[
-        "redact",
-        "--text",
-        "token: ghp_abcdefghijklmnop1234567890abcd",
-    ]);
+    let (stdout, _, code) = run(&["--text", "token: ghp_abcdefghijklmnop1234567890abcd"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:GITHUB_TOKEN]"));
 }
@@ -137,7 +140,6 @@ fn text_redacts_github_token() {
 #[test]
 fn text_redacts_database_url() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "DATABASE_URL=postgres://admin:s3cret@db.host:5432/mydb",
     ]);
@@ -148,54 +150,80 @@ fn text_redacts_database_url() {
 
 #[test]
 fn text_redacts_credit_card() {
-    let (stdout, _, code) = run(&["redact", "--text", "card: 4111 1111 1111 1111"]);
+    let (stdout, _, code) = run(&["--text", "card: 4111 1111 1111 1111"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:CREDIT_CARD]"));
 }
 
 #[test]
 fn text_redacts_ssn() {
-    let (stdout, _, code) = run(&["redact", "--text", "ssn: 123-45-6789"]);
+    let (stdout, _, code) = run(&["--text", "ssn: 123-45-6789"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:SSN]"));
 }
 
 #[test]
 fn text_clean_no_findings() {
-    let (stdout, _, code) = run(&["redact", "--text", "this is clean text"]);
+    let (stdout, _, code) = run(&["--text", "this is clean text"]);
     assert_eq!(code, 0);
     assert_eq!(stdout, "this is clean text");
 }
 
 #[test]
 fn text_custom_replacement() {
-    let (stdout, _, code) = run(&[
-        "redact",
-        "--text",
-        "email: user@example.com",
-        "--replacement",
-        "***",
-    ]);
+    let (stdout, _, code) = run(&["--text", "email: user@example.com", "--replacement", "***"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("***"));
     assert!(!stdout.contains("[REDACTED"));
+}
+
+// === Path Detection ===
+
+#[test]
+fn text_redacts_unix_path() {
+    let (stdout, _, code) = run(&["--text", "config at /etc/nginx/nginx.conf"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[REDACTED:PATH]"));
+    assert!(!stdout.contains("/etc/nginx"));
+}
+
+#[test]
+fn text_redacts_home_path() {
+    let (stdout, _, code) = run(&["--text", "file: /home/user/.ssh/id_rsa"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[REDACTED:PATH]"));
+    assert!(!stdout.contains("/home/user"));
+}
+
+#[test]
+fn text_redacts_relative_path() {
+    let (stdout, _, code) = run(&["--text", "log at ./logs/app/server.log ok"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[REDACTED:PATH]"));
+    assert!(!stdout.contains("./logs/app"));
+}
+
+#[test]
+fn text_no_false_positive_single_slash() {
+    let (stdout, _, code) = run(&["--text", "use a/b for the option"]);
+    assert_eq!(code, 0);
+    // "a/b" is too short to be a meaningful path — should not be redacted
+    assert!(!stdout.contains("[REDACTED:PATH]"));
 }
 
 // === Stdin Mode ===
 
 #[test]
 fn stdin_redacts_email() {
-    let (stdout, _, code) = run_with_stdin(&["redact"], "contact user@example.com");
+    let (stdout, _, code) = run_with_stdin(&[], "contact user@example.com");
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
 }
 
 #[test]
 fn stdin_redacts_multiple() {
-    let (stdout, _, code) = run_with_stdin(
-        &["redact"],
-        "email: user@example.com\nkey=AKIAIOSFODNN7EXAMPLE\n",
-    );
+    let (stdout, _, code) =
+        run_with_stdin(&[], "email: user@example.com\nkey=AKIAIOSFODNN7EXAMPLE\n");
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     assert!(stdout.contains("[REDACTED:AWS_KEY]"));
@@ -209,7 +237,7 @@ fn file_input_to_stdout() {
     let input = dir.join("input.txt");
     fs::write(&input, "secret: user@example.com").unwrap();
 
-    let (stdout, _, code) = run(&["redact", "--input", input.to_str().unwrap()]);
+    let (stdout, _, code) = run(&["--input", input.to_str().unwrap()]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     let _ = fs::remove_dir_all(&dir);
@@ -223,7 +251,6 @@ fn file_input_to_output() {
     fs::write(&input, "email: user@example.com").unwrap();
 
     let (_, _, code) = run(&[
-        "redact",
         "--input",
         input.to_str().unwrap(),
         "--output",
@@ -241,7 +268,7 @@ fn file_in_place() {
     let input = dir.join("input.txt");
     fs::write(&input, "email: user@example.com").unwrap();
 
-    let (_, _, code) = run(&["redact", "--input", input.to_str().unwrap(), "--in-place"]);
+    let (_, _, code) = run(&["--input", input.to_str().unwrap(), "--in-place"]);
     assert_eq!(code, 0);
     let content = fs::read_to_string(&input).unwrap();
     assert!(content.contains("[REDACTED:EMAIL]"));
@@ -265,7 +292,6 @@ fn directory_to_output() {
     .unwrap();
 
     let (_, stderr, code) = run(&[
-        "redact",
         "--input",
         input_dir.to_str().unwrap(),
         "--output",
@@ -290,7 +316,6 @@ fn directory_preserves_structure() {
     fs::write(input_dir.join("a").join("b").join("deep.txt"), "clean text").unwrap();
 
     let (_, _, code) = run(&[
-        "redact",
         "--input",
         input_dir.to_str().unwrap(),
         "--output",
@@ -308,8 +333,8 @@ fn directory_requires_output() {
     fs::create_dir_all(&input_dir).unwrap();
     fs::write(input_dir.join("a.txt"), "test").unwrap();
 
-    let (_, _, code) = run(&["redact", "--input", input_dir.to_str().unwrap()]);
-    assert_eq!(code, 2); // Usage error
+    let (_, _, code) = run(&["--input", input_dir.to_str().unwrap()]);
+    assert_eq!(code, 2);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -320,12 +345,7 @@ fn directory_dry_run_no_output_required() {
     fs::create_dir_all(&input_dir).unwrap();
     fs::write(input_dir.join("a.txt"), "email: user@example.com").unwrap();
 
-    let (_, stderr, code) = run(&[
-        "redact",
-        "--input",
-        input_dir.to_str().unwrap(),
-        "--dry-run",
-    ]);
+    let (_, stderr, code) = run(&["--input", input_dir.to_str().unwrap(), "--dry-run"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("Summary"));
     let _ = fs::remove_dir_all(&dir);
@@ -335,32 +355,27 @@ fn directory_dry_run_no_output_required() {
 
 #[test]
 fn fail_on_find_exits_3() {
-    let (_, _, code) = run(&[
-        "redact",
-        "--text",
-        "email: user@example.com",
-        "--fail-on-find",
-    ]);
+    let (_, _, code) = run(&["--text", "email: user@example.com", "--fail-on-find"]);
     assert_eq!(code, 3);
 }
 
 #[test]
 fn fail_on_find_exits_0_no_findings() {
-    let (_, _, code) = run(&["redact", "--text", "clean text", "--fail-on-find"]);
+    let (_, _, code) = run(&["--text", "clean text", "--fail-on-find"]);
     assert_eq!(code, 0);
 }
 
 #[test]
 fn dry_run_does_not_redact_text() {
-    let (stdout, stderr, code) = run(&["redact", "--text", "email: user@example.com", "--dry-run"]);
+    let (stdout, stderr, code) = run(&["--text", "email: user@example.com", "--dry-run"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("user@example.com")); // Not redacted
+    assert!(stdout.contains("user@example.com"));
     assert!(stderr.contains("Summary"));
 }
 
 #[test]
 fn summary_flag() {
-    let (_, stderr, code) = run(&["redact", "--text", "user@example.com", "--summary"]);
+    let (_, stderr, code) = run(&["--text", "user@example.com", "--summary"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("Summary"));
     assert!(stderr.contains("Total findings"));
@@ -368,12 +383,7 @@ fn summary_flag() {
 
 #[test]
 fn report_json() {
-    let (stdout, stderr, code) = run(&[
-        "redact",
-        "--text",
-        "email: user@example.com",
-        "--report-json",
-    ]);
+    let (stdout, stderr, code) = run(&["--text", "email: user@example.com", "--report-json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     assert!(stderr.contains("\"files_processed\""));
@@ -382,13 +392,7 @@ fn report_json() {
 
 #[test]
 fn format_json() {
-    let (stdout, _, code) = run(&[
-        "redact",
-        "--text",
-        "email: user@example.com",
-        "--format",
-        "json",
-    ]);
+    let (stdout, _, code) = run(&["--text", "email: user@example.com", "--format", "json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"summary\""));
     assert!(stdout.contains("\"files\""));
@@ -397,7 +401,6 @@ fn format_json() {
 #[test]
 fn custom_pattern() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "code: PROJ-1234",
         "--pattern",
@@ -410,7 +413,6 @@ fn custom_pattern() {
 #[test]
 fn allow_pattern_filters() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "email: user@example.com and key=AKIAIOSFODNN7EXAMPLE",
         "--allow-pattern",
@@ -418,33 +420,32 @@ fn allow_pattern_filters() {
     ]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
-    assert!(stdout.contains("AKIAIOSFODNN7EXAMPLE")); // AWS key not redacted
+    assert!(stdout.contains("AKIAIOSFODNN7EXAMPLE"));
 }
 
 #[test]
 fn deny_pattern_filters() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "email: user@example.com",
         "--deny-pattern",
         "EMAIL",
     ]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("user@example.com")); // Not redacted
+    assert!(stdout.contains("user@example.com"));
 }
 
 // === Error Handling ===
 
 #[test]
 fn missing_input_file() {
-    let (_, _, code) = run(&["redact", "--input", "/nonexistent/path"]);
+    let (_, _, code) = run(&["--input", "/nonexistent/path"]);
     assert_eq!(code, 2);
 }
 
 #[test]
 fn no_input_no_pipe() {
-    let (_, stderr, code) = run(&["redact"]);
+    let (_, stderr, code) = run(&[]);
     assert!(
         code == 2 || code == 0,
         "code was {}, stderr: {}",
@@ -455,7 +456,7 @@ fn no_input_no_pipe() {
 
 #[test]
 fn unknown_flag_error() {
-    let (_, _, code) = run(&["redact", "--banana"]);
+    let (_, _, code) = run(&["--banana"]);
     assert_eq!(code, 2);
 }
 
@@ -463,14 +464,14 @@ fn unknown_flag_error() {
 
 #[test]
 fn empty_text() {
-    let (stdout, _, code) = run(&["redact", "--text", ""]);
+    let (stdout, _, code) = run(&["--text", ""]);
     assert_eq!(code, 0);
     assert_eq!(stdout, "");
 }
 
 #[test]
 fn unicode_text() {
-    let (stdout, _, code) = run(&["redact", "--text", "日本語テスト user@example.com résumé"]);
+    let (stdout, _, code) = run(&["--text", "日本語テスト user@example.com résumé"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     assert!(stdout.contains("日本語テスト"));
@@ -480,20 +481,15 @@ fn unicode_text() {
 #[test]
 fn long_line_no_crash() {
     let long_line = "a".repeat(100_000);
-    let (stdout, _, code) = run(&["redact", "--text", &long_line]);
+    let (stdout, _, code) = run(&["--text", &long_line]);
     assert_eq!(code, 0);
     assert_eq!(stdout.len(), 100_000);
 }
 
 #[test]
 fn multiple_secrets_same_line() {
-    let (stdout, _, code) = run(&[
-        "redact",
-        "--text",
-        "user@a.com and user@b.com and 192.168.1.1",
-    ]);
+    let (stdout, _, code) = run(&["--text", "user@a.com and user@b.com and 192.168.1.1"]);
     assert_eq!(code, 0);
-    // Should have multiple redactions
     let redact_count = stdout.matches("[REDACTED:").count();
     assert!(
         redact_count >= 3,
@@ -507,12 +503,11 @@ fn binary_file_skipped() {
     let dir = temp_dir("binary_skip");
     let binary_file = dir.join("binary.dat");
     let mut data = vec![0u8; 1000];
-    data[0] = 0x00; // null byte
+    data[0] = 0x00;
     data[1] = 0xFF;
     fs::write(&binary_file, &data).unwrap();
 
-    let (_, stderr, code) = run(&["redact", "--input", binary_file.to_str().unwrap()]);
-    // Should skip (or error gracefully) for binary
+    let (_, stderr, code) = run(&["--input", binary_file.to_str().unwrap()]);
     assert!(code == 0 || code == 1, "code: {}, stderr: {}", code, stderr);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -520,7 +515,7 @@ fn binary_file_skipped() {
 #[test]
 fn private_key_block() {
     let text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAn\n-----END RSA PRIVATE KEY-----";
-    let (stdout, _, code) = run(&["redact", "--text", text]);
+    let (stdout, _, code) = run(&["--text", text]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:PRIVATE_KEY]"));
     assert!(!stdout.contains("MIIEowIBAAKCAQEAn"));
@@ -529,7 +524,6 @@ fn private_key_block() {
 #[test]
 fn bearer_token() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9",
     ]);
@@ -539,7 +533,7 @@ fn bearer_token() {
 
 #[test]
 fn password_assignment() {
-    let (stdout, _, code) = run(&["redact", "--text", "password=supersecret123"]);
+    let (stdout, _, code) = run(&["--text", "password=supersecret123"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:PASSWORD]"));
     assert!(!stdout.contains("supersecret123"));
@@ -548,13 +542,11 @@ fn password_assignment() {
 #[test]
 fn reports_never_leak_full_secrets() {
     let (_, stderr, _) = run(&[
-        "redact",
         "--text",
         "password=my_super_secret_password_value",
         "--report-json",
     ]);
     assert!(!stderr.contains("my_super_secret_password_value"));
-    // Should contain masked sample with ***
     if stderr.contains("masked_sample") {
         assert!(stderr.contains("***"));
     }
@@ -578,7 +570,6 @@ MY_ID = "ID-\d+"
     .unwrap();
 
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "user ID-12345 found",
         "--config",
@@ -594,12 +585,12 @@ MY_ID = "ID-\d+"
 
 #[test]
 fn exit_code_0_success() {
-    let (_, _, code) = run(&["redact", "--text", "clean"]);
+    let (_, _, code) = run(&["--text", "clean"]);
     assert_eq!(code, 0);
 }
 
 #[test]
 fn exit_code_3_findings_with_fail() {
-    let (_, _, code) = run(&["redact", "--text", "user@example.com", "--fail-on-find"]);
+    let (_, _, code) = run(&["--text", "user@example.com", "--fail-on-find"]);
     assert_eq!(code, 3);
 }

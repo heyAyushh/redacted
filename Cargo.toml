@@ -1,5 +1,5 @@
 [package]
-name = "redact"
+name = "redacted"
 version = "0.1.0"
 edition = "2021"
 description = "Production-grade CLI for redacting secrets and personal information from text and files. Zero external dependencies."
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "text-processing"]
 # full auditability, no regex engine (purpose-built scanners instead).
 
 [[bin]]
-name = "redact"
+name = "redacted"
 path = "src/main.rs"
 
 [profile.release]
