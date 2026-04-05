@@ -1,4 +1,4 @@
-# redact
+# redacted
 
 **Production-grade CLI for redacting secrets and PII from text and files.**
 
@@ -24,18 +24,18 @@ Zero external dependencies. Offline. Safe by default.
 ```bash
 # Clone and build
 git clone <repo-url>
-cd redact
+cd redacted
 cargo build --release
 
 # The binary is at:
-./target/release/redact
+./target/release/redacted
 ```
 
 Or build in debug mode for development:
 
 ```bash
 cargo build
-cargo run -- redact --help
+cargo run -- --help
 ```
 
 ---
@@ -44,31 +44,46 @@ cargo run -- redact --help
 
 ```bash
 # Redact a string
-redact redact --text "email me at user@example.com"
+redacted --text "email me at user@example.com"
 # → email me at [REDACTED:EMAIL]
 
 # Pipe from stdin
-echo "AWS key: AKIAIOSFODNN7EXAMPLE" | redact redact
+echo "AWS key: AKIAIOSFODNN7EXAMPLE" | redacted
 # → AWS key: [REDACTED:AWS_KEY]
 
 # Redact a file and write output
-redact redact --input secrets.log --output clean.log
+redacted --input secrets.log --output clean.log
 
 # Redact a directory tree
-redact redact --input logs/ --output cleaned/ --summary
+redacted --input logs/ --output cleaned/ --summary
 
 # Dry-run in CI (exit code 3 if secrets found)
-redact redact --input . --fail-on-find --dry-run
+redacted --input . --fail-on-find --dry-run
 
 # In-place redaction
-redact redact --input config.env --in-place
+redacted --input config.env --in-place
+
+# Redact filesystem paths
+redacted --text "config at /etc/nginx/nginx.conf"
+# → config at [REDACTED:PATH]
+
+# Redact IP addresses (IPv4 and IPv6)
+redacted --text "server 192.168.1.100"
+# → server [REDACTED:IP]
+
+redacted --text "addr: 2001:0db8:85a3::8a2e:0370:7334"
+# → addr: [REDACTED:IP]
+
+# Multiple types in one pass
+redacted --text "user@a.com at /var/log/app.log from 10.0.0.1"
+# → [REDACTED:EMAIL] at [REDACTED:PATH] from [REDACTED:IP]
 ```
 
 ---
 
 ## Detectors
 
-### Secrets
+### Secrets (12)
 
 | Detector | Name | Matches |
 |----------|------|---------|
@@ -85,20 +100,29 @@ redact redact --input config.env --in-place
 | Stripe Key | `STRIPE_KEY` | `sk_live_`, `sk_test_`, `pk_live_`, `pk_test_`, etc. |
 | Generic Secret | `GENERIC_SECRET` | `SECRET=`, `TOKEN=`, `CREDENTIAL=`, `AUTH_KEY=` assignments |
 
-### PII
+### PII (7)
 
 | Detector | Name | Matches |
 |----------|------|---------|
 | Email | `EMAIL` | RFC-style email addresses |
 | Phone | `PHONE` | Phone numbers (7–15 digits, optional `+`, parens, dashes) |
-| IPv4 | `IPV4` | Dotted-quad IPv4 addresses with octet validation |
-| IPv6 | `IPV6` | Colon-separated IPv6 addresses including `::` shorthand |
+| IP Address | `IP` | IPv4 (dotted-quad with octet validation) and IPv6 (colon-separated including `::` shorthand) |
 | Credit Card | `CREDIT_CARD` | 13–19 digit card numbers with Luhn checksum validation |
 | SSN | `SSN` | US Social Security Numbers (`NNN-NN-NNNN` with area/group/serial validation) |
+| Filesystem Path | `PATH` | Absolute (`/etc/...`), relative (`./src/...`, `../`), home (`~/...`), and Windows (`C:\...`) paths |
+
+### Custom
+
+Add your own patterns via CLI or config:
+
+```bash
+redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
+# → ref [REDACTED:PROJECT_ID]
+```
 
 ---
 
-## CLI Flags Reference
+## CLI Reference
 
 ### Input
 
@@ -169,7 +193,7 @@ follow_symlinks = false
 binary = "skip"
 
 # Selective detectors
-# allow_patterns = "EMAIL,AWS_KEY"
+# allow_patterns = "EMAIL,AWS_KEY,IP,PATH"
 # deny_patterns = "PHONE"
 
 # Custom patterns
@@ -213,8 +237,10 @@ cargo build          # Debug build
 cargo test           # Run all tests (unit + integration)
 cargo clippy         # Lint
 cargo fmt --check    # Format check
-cargo run -- redact --help
+cargo run -- --help
 ```
+
+See `docs/` for full documentation and `skills/redaction-cli/SKILL.md` for contributor guidance.
 
 ---
 
