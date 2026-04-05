@@ -1,0 +1,23 @@
+[package]
+name = "redacted"
+version = "0.1.0"
+edition = "2021"
+description = "Production-grade CLI for redacting secrets and personal information from text and files. Zero external dependencies."
+license = "MIT"
+readme = "README.md"
+keywords = ["redact", "secrets", "pii", "security", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+
+[dependencies]
+# Zero external dependencies. Everything uses std only.
+# This is a deliberate security decision: fewer supply-chain vectors,
+# full auditability, no regex engine (purpose-built scanners instead).
+
+[[bin]]
+name = "redacted"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
