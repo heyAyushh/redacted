@@ -1,6 +1,6 @@
 # Security Guarantees
 
-This document describes what `redact` guarantees, what it does not guarantee, and the security-relevant design decisions behind the tool.
+This document describes what `redacted` guarantees, what it does not guarantee, and the security-relevant design decisions behind the tool.
 
 ---
 
@@ -21,7 +21,7 @@ There are no `unsafe` blocks anywhere in the codebase. All memory safety guarant
 
 ### No Network Access
 
-`redact` never opens a network socket. It does not:
+`redacted` never opens a network socket. It does not:
 
 - Phone home.
 - Check for updates.
@@ -43,7 +43,7 @@ Custom patterns use a bounded repetition matcher capped at 4096 iterations per q
 
 ### Atomic File Writes
 
-When writing output files (including `--in-place`), `redact` uses atomic write semantics:
+When writing output files (including `--in-place`), `redacted` uses atomic write semantics:
 
 1. Write content to a temporary file (`.redact_tmp_<PID>_<filename>`) in the same directory as the target.
 2. Call `fsync` to flush to disk.
@@ -92,7 +92,7 @@ By default, hidden files and directories (names starting with `.`) are excluded 
 
 ### Completeness of Detection
 
-`redact` is **not** a guarantee that all secrets or PII have been found. It detects known patterns with known structures. It will miss:
+`redacted` is **not** a guarantee that all secrets or PII have been found. It detects known patterns with known structures. It will miss:
 
 - Secrets in formats it doesn't have a detector for.
 - Obfuscated or encoded secrets (base64-wrapped, encrypted, hex-encoded).
@@ -109,7 +109,7 @@ Use `--allow-pattern` and `--deny-pattern` to tune detection for your use case.
 
 ### Cryptographic Erasure
 
-Redacted content is replaced with marker strings in memory and written to new files. `redact` does not:
+Redacted content is replaced with marker strings in memory and written to new files. `redacted` does not:
 
 - Securely wipe the original file's disk blocks.
 - Overwrite freed memory.

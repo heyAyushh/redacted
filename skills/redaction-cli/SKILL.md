@@ -1,14 +1,14 @@
-# Skill: redact CLI — Secret & PII Redaction Tool
+# Skill: redacted CLI — Secret & PII Redaction Tool
 
 ## When to use this skill
 
-Use this skill whenever you are working on the `redact` binary crate — adding detectors, fixing bugs, modifying CLI behaviour, changing output formats, or reviewing code in this repository.
+Use this skill whenever you are working on the `redacted` binary crate — adding detectors, fixing bugs, modifying CLI behaviour, changing output formats, or reviewing code in this repository.
 
 ---
 
 ## 1. Purpose
 
-`redact` is a production-grade, zero-dependency Rust CLI that scans text and files for secrets and personally identifiable information (PII), replaces matches with safe placeholders, and optionally produces structured JSON reports. It is designed for CI pipelines, log sanitisation, and pre-publish checks.
+`redacted` is a production-grade, zero-dependency Rust CLI that scans text and files for secrets and personally identifiable information (PII), replaces matches with safe placeholders, and optionally produces structured JSON reports. It is designed for CI pipelines, log sanitisation, and pre-publish checks.
 
 ---
 
@@ -42,7 +42,7 @@ src/
 ├── detector/
 │   ├── mod.rs         Finding, Confidence, Detector trait, DetectorRegistry, overlap merging
 │   ├── secrets.rs     Built-in secret detectors (AWS, JWT, Bearer, Stripe, GitHub, Slack, etc.)
-│   ├── pii.rs         Built-in PII detectors (Email, Phone, IPv4, IPv6, CreditCard, SSN)
+│   ├── pii.rs         Built-in PII detectors (Email, Phone, IPv4/IPv6 scanners → unified `IP` / `[REDACTED:IP]`, Path, CreditCard, SSN)
 │   └── custom.rs      User-supplied patterns via --pattern; mini-regex compiler + matcher
 ├── redact.rs          apply_redactions() — replaces finding spans with placeholders
 ├── io_safe.rs         Atomic writes, binary detection, stdin piping, file reads with size limits
@@ -167,39 +167,39 @@ All traversal logic lives in `src/traverse.rs`.
 ### Redact a single string
 
 ```bash
-cargo run -- redact --text "email me at user@example.com"
+cargo run -- --text "email me at user@example.com"
 # Output: email me at [REDACTED:EMAIL]
 ```
 
 ### Pipe from stdin
 
 ```bash
-echo "token=sk_live_abc123def456" | cargo run -- redact
+echo "token=sk_live_abc123def456" | cargo run --
 ```
 
 ### Scan a directory, write redacted copies
 
 ```bash
-cargo run -- redact --input logs/ --output cleaned/ --summary
+cargo run -- --input logs/ --output cleaned/ --summary
 ```
 
 ### Dry-run with fail-on-find (CI gate)
 
 ```bash
-cargo run -- redact --input . --fail-on-find --dry-run
+cargo run -- --input . --fail-on-find --dry-run
 # Exits 3 if any secrets/PII found; exits 0 if clean.
 ```
 
 ### Use a config file
 
 ```bash
-cargo run -- redact --input data/ --output clean/ --config redact.toml
+cargo run -- --input data/ --output clean/ --config redact.toml
 ```
 
 ### Add a one-off custom pattern
 
 ```bash
-cargo run -- redact --text "code PROJ-9999" --pattern "PROJECT=PROJ-\\d+"
+cargo run -- --text "code PROJ-9999" --pattern "PROJECT=PROJ-\\d+"
 ```
 
 ---
@@ -247,7 +247,7 @@ If you are tempted to reach for a dependency, here is how the codebase solves co
 4. Run format check: `cargo fmt --check`.
 5. Build the release binary: `cargo build --release`.
 6. Verify `--help` and `--version` output the correct version.
-7. Run a quick smoke test: `echo "user@example.com" | ./target/release/redact redact`.
-8. Confirm the binary has zero dynamic dependencies beyond libc: `ldd target/release/redact`.
+7. Run a quick smoke test: `echo "user@example.com" | ./target/release/redacted`.
+8. Confirm the binary has zero dynamic dependencies beyond libc: `ldd target/release/redacted`.
 9. Tag the release: `git tag -a v<VERSION> -m "Release v<VERSION>"`.
 10. Update the README if any CLI flags or detectors changed.

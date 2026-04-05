@@ -1,6 +1,6 @@
 # Configuration
 
-`redact` supports an optional TOML configuration file, loaded via the `--config <PATH>` flag. Configuration file values are merged with CLI arguments, with **CLI arguments always taking precedence**.
+`redacted` supports an optional TOML configuration file, loaded via the `--config <PATH>` flag. Configuration file values are merged with CLI arguments, with **CLI arguments always taking precedence**.
 
 ---
 
@@ -88,7 +88,7 @@ binary = "skip"
 # allow_patterns = "AWS_KEY, PRIVATE_KEY, DATABASE_URL"
 
 # Disable these detectors (comma-separated)
-deny_patterns = "PHONE, IPV6"
+deny_patterns = "PHONE, PATH"
 
 # Custom patterns
 [pattern]
@@ -102,7 +102,7 @@ BUILD_TOKEN = "build_[a-zA-Z0-9_]+"
 Only detect secrets, not PII:
 
 ```toml
-deny_patterns = "EMAIL, PHONE, IPV4, IPV6, CREDIT_CARD, SSN"
+deny_patterns = "EMAIL, PHONE, IP, PATH, CREDIT_CARD, SSN"
 ```
 
 ### PII-Only Config
@@ -110,7 +110,7 @@ deny_patterns = "EMAIL, PHONE, IPV4, IPV6, CREDIT_CARD, SSN"
 Only detect PII, not secrets:
 
 ```toml
-allow_patterns = "EMAIL, PHONE, IPV4, IPV6, CREDIT_CARD, SSN"
+allow_patterns = "EMAIL, PHONE, IP, PATH, CREDIT_CARD, SSN"
 ```
 
 ### CI Pipeline Config
@@ -128,7 +128,7 @@ binary = "fail"
 Use with:
 
 ```bash
-redact redact --input src/ --dry-run --fail-on-find --config ci-redact.toml
+redacted --input src/ --dry-run --fail-on-find --config ci-redact.toml
 ```
 
 ### Custom Patterns for Internal Services
@@ -152,17 +152,17 @@ CLI flags override config file values. This lets you define a base config and ad
 
 ```bash
 # Config sets replacement="[SCRUBBED]", but CLI overrides it
-redact redact --input logs/ --output cleaned/ \
+redacted --input logs/ --output cleaned/ \
   --config base.toml \
   --replacement "[REMOVED]"
 
 # Config denies PHONE, but CLI adds extra deny
-redact redact --input data/ --dry-run \
+redacted --input data/ --dry-run \
   --config base.toml \
-  --deny-pattern IPV4
+  --deny-pattern IP
 
 # Config defines patterns; CLI adds one more
-redact redact --input src/ --dry-run \
+redacted --input src/ --dry-run \
   --config base.toml \
   --pattern "EXTRA=extra_[a-z]+"
 ```

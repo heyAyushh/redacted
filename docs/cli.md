@@ -3,11 +3,11 @@
 ## Synopsis
 
 ```
-redact redact [OPTIONS]
-echo "text" | redact redact [OPTIONS]
+redacted [OPTIONS]
+echo "text" | redacted [OPTIONS]
 ```
 
-The binary is called `redact` and currently exposes one subcommand, also called `redact`.
+The binary is called `redacted`. There is no subcommand — flags are passed directly to the binary.
 
 ---
 
@@ -133,79 +133,79 @@ Binary detection samples the first 8192 bytes and checks for null bytes or a hig
 
 ```bash
 # Redact an email from a literal string
-redact redact --text "Contact user@example.com for help"
+redacted --text "Contact user@example.com for help"
 # Output: Contact [REDACTED:EMAIL] for help
 
 # Redact with a custom replacement
-redact redact --text "key=AKIAIOSFODNN7EXAMPLE" --replacement "***"
+redacted --text "key=AKIAIOSFODNN7EXAMPLE" --replacement "***"
 # Output: key=***
 ```
 
 ### Piped Input
 
 ```bash
-# Pipe a file through redact
-cat .env | redact redact
+# Pipe a file through redacted
+cat .env | redacted
 
 # Pipe command output
-git log --oneline | redact redact
+git log --oneline | redacted
 
 # Chain with other tools
-curl -s https://api.example.com/config | redact redact > safe-config.txt
+curl -s https://api.example.com/config | redacted > safe-config.txt
 ```
 
 ### File Processing
 
 ```bash
 # Redact a single file to stdout
-redact redact --input secrets.log
+redacted --input secrets.log
 
 # Redact a file to a new file
-redact redact --input secrets.log --output clean.log
+redacted --input secrets.log --output clean.log
 
 # Redact a file in place (atomic write)
-redact redact --input .env --in-place
+redacted --input .env --in-place
 ```
 
 ### Directory Processing
 
 ```bash
 # Redact an entire directory
-redact redact --input logs/ --output cleaned-logs/
+redacted --input logs/ --output cleaned-logs/
 
 # Dry-run a directory scan
-redact redact --input src/ --dry-run
+redacted --input src/ --dry-run
 
 # Directory scan with JSON report on stderr
-redact redact --input repo/ --output repo-clean/ --report-json 2>report.json
+redacted --input repo/ --output repo-clean/ --report-json 2>report.json
 ```
 
 ### CI Pipeline Integration
 
 ```bash
 # Fail the build if secrets are found in source
-redact redact --input src/ --dry-run --fail-on-find
+redacted --input src/ --dry-run --fail-on-find
 
 # Scan with only specific detectors
-redact redact --input . --dry-run --fail-on-find \
+redacted --input . --dry-run --fail-on-find \
   --allow-pattern AWS_KEY \
   --allow-pattern PRIVATE_KEY \
   --allow-pattern DATABASE_URL
 
 # Exclude noisy detectors
-redact redact --input . --dry-run --fail-on-find \
+redacted --input . --dry-run --fail-on-find \
   --deny-pattern PHONE \
-  --deny-pattern IPV4
+  --deny-pattern IP
 ```
 
 ### Custom Patterns
 
 ```bash
 # Add a custom detector for internal project IDs
-redact redact --text "ticket PROJ-1234" --pattern "PROJECT_ID=PROJ-\\d+"
+redacted --text "ticket PROJ-1234" --pattern "PROJECT_ID=PROJ-\\d+"
 
 # Multiple custom patterns
-redact redact --input config.yml \
+redacted --input config.yml \
   --pattern "INTERNAL_KEY=int_[a-zA-Z0-9]+" \
   --pattern "BUILD_ID=build-\\d+"
 ```
@@ -214,17 +214,17 @@ redact redact --input config.yml \
 
 ```bash
 # Full JSON output (structured report instead of redacted text)
-redact redact --text "user@example.com" --format json
+redacted --text "user@example.com" --format json
 
 # Redacted text + JSON report to stderr
-redact redact --text "user@example.com" --report-json 2>report.json
+redacted --text "user@example.com" --report-json 2>report.json
 ```
 
 ### Configuration File
 
 ```bash
 # Use a TOML config file
-redact redact --input logs/ --output cleaned/ --config redact.toml
+redacted --input logs/ --output cleaned/ --config redact.toml
 ```
 
 See [config.md](config.md) for the configuration file format.

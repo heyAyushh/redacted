@@ -1,6 +1,6 @@
 # Detection Reference
 
-`redact` ships with 18 built-in detectors organized into two categories — **secrets** and **PII** — plus support for user-defined **custom** patterns.
+`redacted` ships with 18 built-in detectors organized into two categories — **secrets** and **PII** — plus support for user-defined **custom** patterns.
 
 Every built-in detector is a purpose-built, linear-time scanner. There is no regex engine; each detector walks the input byte-by-byte with bounded scan windows, making ReDoS impossible.
 
@@ -24,8 +24,8 @@ Every built-in detector is a purpose-built, linear-time scanner. There is no reg
 | `GENERIC_SECRET` | secret | Generic secret/token/credential assignments | Medium |
 | `EMAIL` | pii | Email addresses | High |
 | `PHONE` | pii | Phone numbers (international formats) | High / Medium |
-| `IPV4` | pii | IPv4 addresses | High |
-| `IPV6` | pii | IPv6 addresses | Medium |
+| `IP` | pii | IPv4 and IPv6 addresses (both reported as `[REDACTED:IP]`) | High / Medium |
+| `PATH` | pii | Filesystem paths (absolute, relative, `~`, Windows drive paths) | High / Medium |
 | `CREDIT_CARD` | pii | Credit card numbers (Luhn-validated) | High |
 | `SSN` | pii | US Social Security Numbers | High |
 
@@ -244,9 +244,11 @@ Detects phone numbers in various international formats.
 192.168.1.1              -> NOT detected (looks like IP)
 ```
 
-### IPV4
+### IP
 
-Detects IPv4 addresses with full validation.
+Detects both **IPv4** and **IPv6** addresses. Both kinds of match are reported with the same detector name `IP` and replacement marker `[REDACTED:IP]`.
+
+**IPv4**
 
 - **Format:** Four decimal octets separated by dots
 - **Validation:** Each octet 0–255, no leading zeros (except `0` itself), word boundary checks
@@ -259,9 +261,7 @@ Detects IPv4 addresses with full validation.
 01.2.3.4        -> NOT detected (leading zero)
 ```
 
-### IPV6
-
-Detects IPv6 addresses including compressed (`::`-containing) forms.
+**IPv6**
 
 - **Format:** Hex groups separated by colons
 - **Supports:** Full addresses (8 groups) and compressed addresses with `::`
@@ -274,6 +274,22 @@ Detects IPv6 addresses including compressed (`::`-containing) forms.
 2001:0db8:85a3:0000:0000:8a2e:0370:7334   -> detected
 ::1                                         -> detected (if >= 6 chars)
 fe80::1%eth0                                -> partially detected
+```
+
+### PATH
+
+Detects filesystem paths that look like real directory/file locations (not bare `a/b` option-style text).
+
+- **Starts:** Absolute (`/…`, `C:\…`), relative (`./…`, `../…`), or home (`~/…`)
+- **Scan:** Path characters are collected up to a bounded length (4096 bytes)
+- **Heuristic:** Requires minimum length and multiple path separators so short ambiguous spans are skipped
+- **Confidence:** High when the path has many segments; Medium for shorter multi-segment paths
+
+```
+config at /etc/nginx/nginx.conf     -> detected
+file: /home/user/.ssh/id_rsa        -> detected
+log at ./logs/app/server.log        -> detected
+use a/b for the option              -> typically NOT detected (too few separators)
 ```
 
 ### CREDIT_CARD
@@ -375,14 +391,14 @@ Each finding is assigned a confidence level that indicates how likely it is to b
 | Level | Meaning |
 |-------|---------|
 | **High** | Strong structural match. The pattern is highly specific (e.g., AWS key prefix + exact length, Luhn-validated credit card, SSN with validation) |
-| **Medium** | Plausible match that may have false positives. Typically key-value assignment patterns, IPv6 addresses, or custom patterns |
+| **Medium** | Plausible match that may have false positives. Typically key-value assignment patterns, IPv6 addresses (under the unified `IP` detector), shorter filesystem paths, or custom patterns |
 | **Low** | Defined but not currently assigned by any built-in detector. Available for future use or custom detectors |
 
 ---
 
 ## Overlapping Findings
 
-When multiple detectors match overlapping spans of text, `redact` keeps only the best match:
+When multiple detectors match overlapping spans of text, `redacted` keeps only the best match:
 
 1. Findings are sorted by start position.
 2. When two findings overlap, the one with **higher confidence** wins.

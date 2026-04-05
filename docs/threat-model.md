@@ -1,12 +1,12 @@
 # Threat Model
 
-This document describes the threat model for `redact`: which attack vectors are considered, which are mitigated, and which are explicitly out of scope.
+This document describes the threat model for `redacted`: which attack vectors are considered, which are mitigated, and which are explicitly out of scope.
 
 ---
 
 ## Scope
 
-`redact` is a **local, offline text-processing tool**. It reads input from local files or stdin, processes it in memory, and writes output to local files or stdout. It has no network component, no server mode, and no persistence beyond the filesystem.
+`redacted` is a **local, offline text-processing tool**. It reads input from local files or stdin, processes it in memory, and writes output to local files or stdout. It has no network component, no server mode, and no persistence beyond the filesystem.
 
 The primary use cases are:
 
@@ -32,7 +32,7 @@ The primary use cases are:
 
 | Actor | Capability | Goal |
 |-------|-----------|------|
-| Malicious input author | Can craft input text/files processed by `redact` | Cause DoS, bypass detection, crash the tool, or corrupt output |
+| Malicious input author | Can craft input text/files processed by `redacted` | Cause DoS, bypass detection, crash the tool, or corrupt output |
 | Supply-chain attacker | Can compromise upstream dependencies | Inject malicious code into the binary |
 | Curious report reader | Has access to JSON reports | Extract full secret values from reports |
 | Symlink attacker | Can create symlinks on the filesystem | Read or modify files outside the intended scan scope |
@@ -77,7 +77,7 @@ The primary use cases are:
 - When `--follow-symlinks` is enabled, every resolved symlink target is checked against the canonicalized root directory. Targets outside the root are rejected.
 - Atomic writes create temp files in the target's own directory, so a symlink pointing elsewhere won't cause writes to unexpected locations.
 
-**Residual risk:** TOCTOU (time-of-check-time-of-use) race conditions are theoretically possible if the filesystem is modified between the symlink check and the file read. This is a fundamental limitation of filesystem operations and is not specific to `redact`.
+**Residual risk:** TOCTOU (time-of-check-time-of-use) race conditions are theoretically possible if the filesystem is modified between the symlink check and the file read. This is a fundamental limitation of filesystem operations and is not specific to `redacted`.
 
 ### 5. Secret Leakage in Reports
 
@@ -102,7 +102,7 @@ The primary use cases are:
 - Zero-width characters or homoglyphs inserted into secrets.
 - Novel key formats from new services.
 
-**Recommendation:** Use `redact` as one layer in a defense-in-depth strategy. Combine with pre-commit hooks, secret rotation, and access control.
+**Recommendation:** Use `redacted` as one layer in a defense-in-depth strategy. Combine with pre-commit hooks, secret rotation, and access control.
 
 ### 7. Output Corruption
 
@@ -139,7 +139,7 @@ The following are **not** part of the threat model:
 | Compromised Rust toolchain | Trusted base; not mitigatable by this project |
 | Malicious local user with same privileges | They can already read the files directly |
 | Secure memory wiping | Not a goal; use dedicated tools for data remanence |
-| Encrypted input processing | Decryption is a separate concern; `redact` operates on plaintext |
+| Encrypted input processing | Decryption is a separate concern; `redacted` operates on plaintext |
 | Network-based attacks | There is no network component |
 | Side-channel attacks | Local tool; timing/power analysis not relevant |
 | Malicious `--config` file | Config files are provided by the user; a malicious config could disable detection, but the user controls this |

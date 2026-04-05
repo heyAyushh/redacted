@@ -70,7 +70,7 @@ Unit tests are defined in `#[cfg(test)] mod tests` blocks at the bottom of each 
 | `src/config.rs` | TOML parsing, config merging, defaults |
 | `src/detector/mod.rs` | Masked sample generation, finding merging, registry allow/deny |
 | `src/detector/secrets.rs` | Each secret detector individually: AWS keys, Bearer tokens, JWTs, private keys, API keys, database URLs, passwords, webhook secrets, Slack tokens, GitHub tokens, Stripe keys, generic secrets |
-| `src/detector/pii.rs` | Each PII detector individually: emails, phones, IPv4, IPv6, credit cards, SSNs. Includes Luhn validation tests |
+| `src/detector/pii.rs` | Each PII detector individually: emails, phones, IP (IPv4/IPv6), filesystem paths, credit cards, SSNs. Includes Luhn validation tests |
 | `src/detector/custom.rs` | Custom pattern compilation, literal matching, character classes, quantifiers, negated classes, bounded repetition, invalid pattern handling |
 | `src/redact.rs` | Redaction application: no findings, single, multiple, custom replacement, overlapping findings |
 | `src/io_safe.rs` | Binary detection, atomic file writes, file size limits |
@@ -80,12 +80,12 @@ Unit tests are defined in `#[cfg(test)] mod tests` blocks at the bottom of each 
 
 ### Integration Tests
 
-Integration tests are in `tests/integration.rs`. They invoke the compiled `redact` binary as a subprocess and verify end-to-end behavior.
+Integration tests are in `tests/integration.rs`. They invoke the compiled `redacted` binary as a subprocess and verify end-to-end behavior.
 
 | Test Group | Tests |
 |------------|-------|
 | **Help & version** | `help_flag`, `version_flag` |
-| **Text mode** | `text_redacts_email`, `text_redacts_phone`, `text_redacts_ipv4`, `text_redacts_aws_key`, `text_redacts_jwt`, `text_redacts_stripe_key`, `text_redacts_github_token`, `text_redacts_database_url`, `text_redacts_credit_card`, `text_redacts_ssn`, `text_clean_no_findings`, `text_custom_replacement` |
+| **Text mode** | `text_redacts_email`, `text_redacts_phone`, `text_redacts_ipv4`, `text_redacts_ipv6`, `text_redacts_unix_path`, `text_redacts_home_path`, `text_redacts_relative_path`, `text_no_false_positive_single_slash`, `text_redacts_aws_key`, `text_redacts_jwt`, `text_redacts_stripe_key`, `text_redacts_github_token`, `text_redacts_database_url`, `text_redacts_credit_card`, `text_redacts_ssn`, `text_clean_no_findings`, `text_custom_replacement` |
 | **Stdin mode** | `stdin_redacts_email`, `stdin_redacts_multiple` |
 | **File mode** | `file_input_to_stdout`, `file_input_to_output`, `file_in_place` |
 | **Directory mode** | `directory_to_output`, `directory_preserves_structure`, `directory_requires_output`, `directory_dry_run_no_output_required` |
@@ -136,7 +136,7 @@ Integration tests go in `tests/integration.rs`. They use helper functions to run
 ```rust
 #[test]
 fn my_integration_test() {
-    let (stdout, stderr, code) = run(&["redact", "--text", "test input"]);
+    let (stdout, stderr, code) = run(&["--text", "test input"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("expected output"));
 }
@@ -156,7 +156,6 @@ fn my_integration_test() {
 #[test]
 fn text_redacts_new_secret_type() {
     let (stdout, _, code) = run(&[
-        "redact",
         "--text",
         "my_new_secret_value_here",
     ]);
@@ -177,7 +176,6 @@ fn new_file_mode_test() {
     fs::write(&input, "content with secret").unwrap();
 
     let (_, _, code) = run(&[
-        "redact",
         "--input", input.to_str().unwrap(),
         "--output", output.to_str().unwrap(),
     ]);
