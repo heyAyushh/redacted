@@ -107,7 +107,11 @@ impl CharClass {
             CharClass::NonWhitespace => !c.is_ascii_whitespace(),
             CharClass::Range(ranges, negated) => {
                 let in_range = ranges.iter().any(|(lo, hi)| c >= *lo && c <= *hi);
-                if *negated { !in_range } else { in_range }
+                if *negated {
+                    !in_range
+                } else {
+                    in_range
+                }
             }
         }
     }

@@ -118,8 +118,7 @@ fn process_text(text: &str, config: &Config, registry: &DetectorRegistry) -> err
     // Output
     if config.format == OutputFormat::Json {
         let mut buf = Vec::new();
-        report::write_json_report(&results, &summary, &mut buf)
-            .map_err(RedactError::Io)?;
+        report::write_json_report(&results, &summary, &mut buf).map_err(RedactError::Io)?;
         let json = String::from_utf8(buf).unwrap_or_default();
         if let Some(ref out_path) = config.output {
             io_safe::atomic_write(Path::new(out_path), &json)?;
@@ -136,8 +135,7 @@ fn process_text(text: &str, config: &Config, registry: &DetectorRegistry) -> err
             io_safe::write_stdout(&redacted)?;
         }
         let mut buf = Vec::new();
-        report::write_json_report(&results, &summary, &mut buf)
-            .map_err(RedactError::Io)?;
+        report::write_json_report(&results, &summary, &mut buf).map_err(RedactError::Io)?;
         let json = String::from_utf8(buf).unwrap_or_default();
         eprint!("{}", json);
     } else if let Some(ref out_path) = config.output {
@@ -213,8 +211,7 @@ fn process_single_file(
 
     if config.format == OutputFormat::Json {
         let mut buf = Vec::new();
-        report::write_json_report(&results, &summary, &mut buf)
-            .map_err(RedactError::Io)?;
+        report::write_json_report(&results, &summary, &mut buf).map_err(RedactError::Io)?;
         let json = String::from_utf8(buf).unwrap_or_default();
         if let Some(ref out_path) = config.output {
             io_safe::atomic_write(Path::new(out_path), &json)?;
@@ -233,8 +230,7 @@ fn process_single_file(
         }
         if config.report_json {
             let mut buf = Vec::new();
-            report::write_json_report(&results, &summary, &mut buf)
-                .map_err(RedactError::Io)?;
+            report::write_json_report(&results, &summary, &mut buf).map_err(RedactError::Io)?;
             let json = String::from_utf8(buf).unwrap_or_default();
             eprint!("{}", json);
         }
@@ -326,13 +322,19 @@ fn process_directory(
                 // Write redacted output if not dry-run
                 if !config.dry_run {
                     if let Some(ref out_dir) = config.output {
-                        let redacted =
-                            redact::apply_redactions(&text, &findings, config.replacement.as_deref());
+                        let redacted = redact::apply_redactions(
+                            &text,
+                            &findings,
+                            config.replacement.as_deref(),
+                        );
                         let out_path = Path::new(out_dir).join(&relative);
                         io_safe::atomic_write(&out_path, &redacted)?;
                     } else if config.in_place {
-                        let redacted =
-                            redact::apply_redactions(&text, &findings, config.replacement.as_deref());
+                        let redacted = redact::apply_redactions(
+                            &text,
+                            &findings,
+                            config.replacement.as_deref(),
+                        );
                         io_safe::atomic_write(&path, &redacted)?;
                     }
                 }
@@ -359,8 +361,7 @@ fn process_directory(
 
     if config.report_json || config.format == OutputFormat::Json {
         let mut buf = Vec::new();
-        report::write_json_report(&results, &summary, &mut buf)
-            .map_err(RedactError::Io)?;
+        report::write_json_report(&results, &summary, &mut buf).map_err(RedactError::Io)?;
         let json = String::from_utf8(buf).unwrap_or_default();
         if config.format == OutputFormat::Json {
             io_safe::write_stdout(&json)?;

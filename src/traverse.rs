@@ -25,22 +25,13 @@ impl Default for TraverseConfig {
 #[derive(Debug)]
 pub enum FileEntry {
     /// File is eligible for processing.
-    Eligible {
-        path: PathBuf,
-        relative: PathBuf,
-    },
+    Eligible { path: PathBuf, relative: PathBuf },
     /// File was skipped with a reason.
-    Skipped {
-        path: PathBuf,
-        reason: String,
-    },
+    Skipped { path: PathBuf, reason: String },
 }
 
 /// Recursively collect files from a directory, applying safety checks.
-pub fn collect_files(
-    root: &Path,
-    config: &TraverseConfig,
-) -> Result<Vec<FileEntry>> {
+pub fn collect_files(root: &Path, config: &TraverseConfig) -> Result<Vec<FileEntry>> {
     let root = root.canonicalize().map_err(|e| {
         RedactError::Traversal(format!("Cannot resolve path '{}': {}", root.display(), e))
     })?;
@@ -77,12 +68,20 @@ fn collect_recursive(
     }
 
     let read_dir = fs::read_dir(current).map_err(|e| {
-        RedactError::Traversal(format!("Cannot read directory '{}': {}", current.display(), e))
+        RedactError::Traversal(format!(
+            "Cannot read directory '{}': {}",
+            current.display(),
+            e
+        ))
     })?;
 
     for entry in read_dir {
         let entry = entry.map_err(|e| {
-            RedactError::Traversal(format!("Error reading entry in '{}': {}", current.display(), e))
+            RedactError::Traversal(format!(
+                "Error reading entry in '{}': {}",
+                current.display(),
+                e
+            ))
         })?;
 
         let path = entry.path();
@@ -117,7 +116,8 @@ fn collect_recursive(
                     if !resolved.starts_with(base) {
                         entries.push(FileEntry::Skipped {
                             path: path.clone(),
-                            reason: "Symlink target outside root (path traversal protection)".into(),
+                            reason: "Symlink target outside root (path traversal protection)"
+                                .into(),
                         });
                         continue;
                     }
@@ -193,9 +193,18 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(eligible.len(), 2, "Expected 2 eligible, got: {:?}", eligible);
-        assert!(eligible.iter().any(|p| p.to_str().unwrap().contains("a.txt")));
-        assert!(eligible.iter().any(|p| p.to_str().unwrap().contains("b.txt")));
+        assert_eq!(
+            eligible.len(),
+            2,
+            "Expected 2 eligible, got: {:?}",
+            eligible
+        );
+        assert!(eligible
+            .iter()
+            .any(|p| p.to_str().unwrap().contains("a.txt")));
+        assert!(eligible
+            .iter()
+            .any(|p| p.to_str().unwrap().contains("b.txt")));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -224,9 +233,7 @@ mod tests {
         let config = TraverseConfig::default();
         let entries = collect_files(&dir, &config).unwrap();
         let has_sub = entries.iter().any(|e| match e {
-            FileEntry::Eligible { relative, .. } => {
-                relative.to_str().unwrap().contains("sub")
-            }
+            FileEntry::Eligible { relative, .. } => relative.to_str().unwrap().contains("sub"),
             _ => false,
         });
         assert!(has_sub);

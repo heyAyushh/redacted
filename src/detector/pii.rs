@@ -6,8 +6,12 @@ use super::{Confidence, Detector, Finding};
 pub struct EmailDetector;
 
 impl Detector for EmailDetector {
-    fn name(&self) -> &'static str { "EMAIL" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "EMAIL"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -90,8 +94,12 @@ fn scan_email_domain_forward(bytes: &[u8], start: usize) -> usize {
 pub struct PhoneDetector;
 
 impl Detector for PhoneDetector {
-    fn name(&self) -> &'static str { "PHONE" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "PHONE"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -99,32 +107,47 @@ impl Detector for PhoneDetector {
 
         let mut i = 0;
         while i < bytes.len() {
-            // Look for phone-like starts: +, (, or digit after word boundary
             if (bytes[i] == b'+' || bytes[i] == b'(' || bytes[i].is_ascii_digit())
                 && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
             {
                 let (end, digit_count) = scan_phone(bytes, i);
                 if (7..=15).contains(&digit_count) && (end - i) >= 7 {
-                    findings.push(Finding {
-                        detector_name: self.name(),
-                        category: self.category(),
-                        start: i,
-                        end,
-                        confidence: if digit_count >= 10 {
-                            Confidence::High
-                        } else {
-                            Confidence::Medium
-                        },
-                        matched_len: end - i,
-                    });
-                    i = end;
-                    continue;
+                    let matched = &bytes[i..end];
+                    // Reject if it looks like an IP address (digits separated only by dots)
+                    if !looks_like_ip(matched) {
+                        findings.push(Finding {
+                            detector_name: self.name(),
+                            category: self.category(),
+                            start: i,
+                            end,
+                            confidence: if digit_count >= 10 {
+                                Confidence::High
+                            } else {
+                                Confidence::Medium
+                            },
+                            matched_len: end - i,
+                        });
+                        i = end;
+                        continue;
+                    }
                 }
             }
             i += 1;
         }
         findings
     }
+}
+
+fn looks_like_ip(bytes: &[u8]) -> bool {
+    let dot_count = bytes.iter().filter(|&&b| b == b'.').count();
+    if dot_count < 2 {
+        return false;
+    }
+    // If separators are only dots (no spaces, dashes, parens), it's likely an IP
+    let non_digit_non_dot = bytes
+        .iter()
+        .any(|&b| !b.is_ascii_digit() && b != b'.' && b != b'+');
+    dot_count >= 2 && !non_digit_non_dot
 }
 
 fn scan_phone(bytes: &[u8], start: usize) -> (usize, usize) {
@@ -137,7 +160,13 @@ fn scan_phone(bytes: &[u8], start: usize) -> (usize, usize) {
         if c.is_ascii_digit() {
             digit_count += 1;
             pos += 1;
-        } else if (c == b'+' && pos == start) || c == b' ' || c == b'-' || c == b'.' || c == b'(' || c == b')' {
+        } else if (c == b'+' && pos == start)
+            || c == b' '
+            || c == b'-'
+            || c == b'.'
+            || c == b'('
+            || c == b')'
+        {
             pos += 1;
         } else {
             break;
@@ -156,8 +185,12 @@ fn scan_phone(bytes: &[u8], start: usize) -> (usize, usize) {
 pub struct Ipv4Detector;
 
 impl Detector for Ipv4Detector {
-    fn name(&self) -> &'static str { "IPV4" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "IPV4"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -236,8 +269,12 @@ fn try_parse_ipv4(bytes: &[u8], start: usize) -> Option<(usize, bool)> {
 pub struct Ipv6Detector;
 
 impl Detector for Ipv6Detector {
-    fn name(&self) -> &'static str { "IPV6" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "IPV6"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -321,8 +358,12 @@ fn try_scan_ipv6(bytes: &[u8], start: usize) -> Option<usize> {
 pub struct CreditCardDetector;
 
 impl Detector for CreditCardDetector {
-    fn name(&self) -> &'static str { "CREDIT_CARD" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "CREDIT_CARD"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -411,8 +452,12 @@ fn luhn_check(digits: &[u8]) -> bool {
 pub struct SsnDetector;
 
 impl Detector for SsnDetector {
-    fn name(&self) -> &'static str { "SSN" }
-    fn category(&self) -> &'static str { "pii" }
+    fn name(&self) -> &'static str {
+        "SSN"
+    }
+    fn category(&self) -> &'static str {
+        "pii"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -421,7 +466,10 @@ impl Detector for SsnDetector {
         // Pattern: NNN-NN-NNNN
         let mut i = 0;
         while i + 10 < bytes.len() {
-            if bytes[i].is_ascii_digit() && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric()) && matches_ssn_pattern(bytes, i) {
+            if bytes[i].is_ascii_digit()
+                && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+                && matches_ssn_pattern(bytes, i)
+            {
                 let end = i + 11;
                 if end >= bytes.len() || !bytes[end].is_ascii_digit() {
                     findings.push(Finding {
@@ -506,7 +554,10 @@ mod tests {
         let d = Ipv4Detector;
         let findings = d.detect("server at 192.168.1.100 ready");
         assert_eq!(findings.len(), 1);
-        assert_eq!(&"server at 192.168.1.100 ready"[findings[0].start..findings[0].end], "192.168.1.100");
+        assert_eq!(
+            &"server at 192.168.1.100 ready"[findings[0].start..findings[0].end],
+            "192.168.1.100"
+        );
     }
 
     #[test]

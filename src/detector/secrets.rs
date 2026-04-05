@@ -42,8 +42,12 @@ fn scan_while(text: &[u8], start: usize, pred: fn(u8) -> bool, max_len: usize) -
 pub struct AwsKeyDetector;
 
 impl Detector for AwsKeyDetector {
-    fn name(&self) -> &'static str { "AWS_KEY" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "AWS_KEY"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -54,7 +58,10 @@ impl Detector for AwsKeyDetector {
             for prefix in prefixes {
                 if bytes[i..].starts_with(prefix) && is_word_boundary(bytes, i) {
                     let end = i + 20;
-                    if end <= bytes.len() && bytes[i..end].iter().all(|c| c.is_ascii_alphanumeric()) && (end >= bytes.len() || !bytes[end].is_ascii_alphanumeric()) {
+                    if end <= bytes.len()
+                        && bytes[i..end].iter().all(|c| c.is_ascii_alphanumeric())
+                        && (end >= bytes.len() || !bytes[end].is_ascii_alphanumeric())
+                    {
                         findings.push(Finding {
                             detector_name: self.name(),
                             category: self.category(),
@@ -76,8 +83,12 @@ impl Detector for AwsKeyDetector {
 pub struct BearerTokenDetector;
 
 impl Detector for BearerTokenDetector {
-    fn name(&self) -> &'static str { "BEARER_TOKEN" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "BEARER_TOKEN"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -89,9 +100,8 @@ impl Detector for BearerTokenDetector {
         while i + prefix_len < bytes.len() {
             if find_prefix_case_insensitive(bytes, i, prefix) {
                 let token_start = i + prefix_len;
-                let token_end = scan_while(bytes, token_start, |c| {
-                    is_base64url(c) || c == b'.'
-                }, 2048);
+                let token_end =
+                    scan_while(bytes, token_start, |c| is_base64url(c) || c == b'.', 2048);
                 let token_len = token_end - token_start;
                 if token_len >= 20 {
                     findings.push(Finding {
@@ -117,8 +127,12 @@ impl Detector for BearerTokenDetector {
 pub struct JwtDetector;
 
 impl Detector for JwtDetector {
-    fn name(&self) -> &'static str { "JWT" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "JWT"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let bytes = text.as_bytes();
@@ -166,8 +180,12 @@ impl Detector for JwtDetector {
 pub struct PrivateKeyDetector;
 
 impl Detector for PrivateKeyDetector {
-    fn name(&self) -> &'static str { "PRIVATE_KEY" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "PRIVATE_KEY"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -221,8 +239,12 @@ impl Detector for PrivateKeyDetector {
 pub struct GenericApiKeyDetector;
 
 impl Detector for GenericApiKeyDetector {
-    fn name(&self) -> &'static str { "API_KEY" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "API_KEY"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -232,7 +254,9 @@ impl Detector for GenericApiKeyDetector {
             let lower = line.to_ascii_lowercase();
             for kw in &keywords {
                 if let Some(kw_pos) = lower.find(kw) {
-                    if let Some(finding) = scan_key_value_pair(text, line, kw_pos, self.name(), self.category()) {
+                    if let Some(finding) =
+                        scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
+                    {
                         findings.push(finding);
                     }
                 }
@@ -247,14 +271,25 @@ impl Detector for GenericApiKeyDetector {
 pub struct DatabaseUrlDetector;
 
 impl Detector for DatabaseUrlDetector {
-    fn name(&self) -> &'static str { "DATABASE_URL" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "DATABASE_URL"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
         let schemes = [
-            "postgres://", "postgresql://", "mysql://", "mongodb://",
-            "mongodb+srv://", "redis://", "rediss://", "amqp://", "amqps://",
+            "postgres://",
+            "postgresql://",
+            "mysql://",
+            "mongodb://",
+            "mongodb+srv://",
+            "redis://",
+            "rediss://",
+            "amqp://",
+            "amqps://",
         ];
 
         let mut search_start = 0;
@@ -308,8 +343,12 @@ impl Detector for DatabaseUrlDetector {
 pub struct PasswordAssignDetector;
 
 impl Detector for PasswordAssignDetector {
-    fn name(&self) -> &'static str { "PASSWORD" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "PASSWORD"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -324,7 +363,9 @@ impl Detector for PasswordAssignDetector {
                     break;
                 }
                 if let Some(kw_pos) = lower.find(kw) {
-                    if let Some(finding) = scan_key_value_pair(text, line, kw_pos, self.name(), self.category()) {
+                    if let Some(finding) =
+                        scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
+                    {
                         findings.push(finding);
                         matched = true;
                     }
@@ -340,8 +381,12 @@ impl Detector for PasswordAssignDetector {
 pub struct WebhookSecretDetector;
 
 impl Detector for WebhookSecretDetector {
-    fn name(&self) -> &'static str { "WEBHOOK_SECRET" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "WEBHOOK_SECRET"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -376,8 +421,12 @@ impl Detector for WebhookSecretDetector {
 pub struct SlackTokenDetector;
 
 impl Detector for SlackTokenDetector {
-    fn name(&self) -> &'static str { "SLACK_TOKEN" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "SLACK_TOKEN"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -388,9 +437,12 @@ impl Detector for SlackTokenDetector {
             while let Some(pos) = text[start..].find(prefix) {
                 let abs_start = start + pos;
                 let bytes = text.as_bytes();
-                let end = scan_while(bytes, abs_start + prefix.len(), |c| {
-                    c.is_ascii_alphanumeric() || c == b'-'
-                }, 256);
+                let end = scan_while(
+                    bytes,
+                    abs_start + prefix.len(),
+                    |c| c.is_ascii_alphanumeric() || c == b'-',
+                    256,
+                );
                 let total = end - abs_start;
                 if total >= 15 {
                     findings.push(Finding {
@@ -414,8 +466,12 @@ impl Detector for SlackTokenDetector {
 pub struct GithubTokenDetector;
 
 impl Detector for GithubTokenDetector {
-    fn name(&self) -> &'static str { "GITHUB_TOKEN" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "GITHUB_TOKEN"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -426,9 +482,12 @@ impl Detector for GithubTokenDetector {
             while let Some(pos) = text[start..].find(prefix) {
                 let abs_start = start + pos;
                 let bytes = text.as_bytes();
-                let end = scan_while(bytes, abs_start + prefix.len(), |c| {
-                    c.is_ascii_alphanumeric() || c == b'_'
-                }, 256);
+                let end = scan_while(
+                    bytes,
+                    abs_start + prefix.len(),
+                    |c| c.is_ascii_alphanumeric() || c == b'_',
+                    256,
+                );
                 let total = end - abs_start;
                 if total >= 15 {
                     findings.push(Finding {
@@ -452,21 +511,30 @@ impl Detector for GithubTokenDetector {
 pub struct StripeKeyDetector;
 
 impl Detector for StripeKeyDetector {
-    fn name(&self) -> &'static str { "STRIPE_KEY" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "STRIPE_KEY"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let prefixes = ["sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_"];
+        let prefixes = [
+            "sk_live_", "sk_test_", "pk_live_", "pk_test_", "rk_live_", "rk_test_",
+        ];
 
         for prefix in &prefixes {
             let mut start = 0;
             while let Some(pos) = text[start..].find(prefix) {
                 let abs_start = start + pos;
                 let bytes = text.as_bytes();
-                let end = scan_while(bytes, abs_start + prefix.len(), |c| {
-                    c.is_ascii_alphanumeric() || c == b'_'
-                }, 256);
+                let end = scan_while(
+                    bytes,
+                    abs_start + prefix.len(),
+                    |c| c.is_ascii_alphanumeric() || c == b'_',
+                    256,
+                );
                 let total = end - abs_start;
                 if total >= 15 {
                     findings.push(Finding {
@@ -491,8 +559,12 @@ impl Detector for StripeKeyDetector {
 pub struct GenericSecretAssignDetector;
 
 impl Detector for GenericSecretAssignDetector {
-    fn name(&self) -> &'static str { "GENERIC_SECRET" }
-    fn category(&self) -> &'static str { "secret" }
+    fn name(&self) -> &'static str {
+        "GENERIC_SECRET"
+    }
+    fn category(&self) -> &'static str {
+        "secret"
+    }
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
@@ -506,11 +578,19 @@ impl Detector for GenericSecretAssignDetector {
                     let after = kw_pos + kw.len();
                     if after < lower.len() {
                         let next_char = lower.as_bytes()[after];
-                        if next_char.is_ascii_alphabetic() && next_char != b'_' && next_char != b'-' && next_char != b'=' && next_char != b':' && next_char != b' ' {
+                        if next_char.is_ascii_alphabetic()
+                            && next_char != b'_'
+                            && next_char != b'-'
+                            && next_char != b'='
+                            && next_char != b':'
+                            && next_char != b' '
+                        {
                             continue;
                         }
                     }
-                    if let Some(finding) = scan_key_value_pair(text, line, kw_pos, self.name(), self.category()) {
+                    if let Some(finding) =
+                        scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
+                    {
                         findings.push(finding);
                     }
                 }
@@ -557,7 +637,8 @@ fn scan_key_value_pair(
         }
     } else {
         // Take until whitespace, comma, semicolon
-        let end = value_part.find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == '#')
+        let end = value_part
+            .find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == '#')
             .unwrap_or(value_part.len());
         (&value_part[..end], false)
     };
@@ -592,7 +673,10 @@ mod tests {
         let text = "key=AKIAIOSFODNN7EXAMPLE rest";
         let findings = d.detect(text);
         assert_eq!(findings.len(), 1);
-        assert_eq!(&text[findings[0].start..findings[0].end], "AKIAIOSFODNN7EXAMPLE");
+        assert_eq!(
+            &text[findings[0].start..findings[0].end],
+            "AKIAIOSFODNN7EXAMPLE"
+        );
     }
 
     #[test]

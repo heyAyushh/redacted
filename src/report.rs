@@ -81,7 +81,11 @@ pub fn print_summary(summary: &Summary) {
 }
 
 /// Write a JSON report to a writer. Hand-rolled JSON to avoid dependencies.
-pub fn write_json_report<W: Write>(results: &[FileResult], summary: &Summary, mut w: W) -> io::Result<()> {
+pub fn write_json_report<W: Write>(
+    results: &[FileResult],
+    summary: &Summary,
+    mut w: W,
+) -> io::Result<()> {
     w.write_all(b"{\n")?;
 
     // Summary
@@ -110,11 +114,15 @@ pub fn write_json_report<W: Write>(results: &[FileResult], summary: &Summary, mu
         }
         w.write_all(b"\n    {\n")?;
         writeln!(w, "      \"path\": \"{}\",", json_escape(&r.path))?;
-        writeln!(w, "      \"status\": \"{}\",", match &r.status {
-            FileStatus::Processed => "processed",
-            FileStatus::Skipped(_) => "skipped",
-            FileStatus::Error(_) => "error",
-        })?;
+        writeln!(
+            w,
+            "      \"status\": \"{}\",",
+            match &r.status {
+                FileStatus::Processed => "processed",
+                FileStatus::Skipped(_) => "skipped",
+                FileStatus::Error(_) => "error",
+            }
+        )?;
 
         if let FileStatus::Skipped(reason) | FileStatus::Error(reason) = &r.status {
             writeln!(w, "      \"reason\": \"{}\",", json_escape(reason))?;
@@ -128,10 +136,26 @@ pub fn write_json_report<W: Write>(results: &[FileResult], summary: &Summary, mu
                 w.write_all(b",")?;
             }
             w.write_all(b"\n        {\n")?;
-            writeln!(w, "          \"detector\": \"{}\",", json_escape(&f.detector))?;
-            writeln!(w, "          \"category\": \"{}\",", json_escape(&f.category))?;
-            writeln!(w, "          \"confidence\": \"{}\",", f.confidence.as_str())?;
-            write!(w, "          \"masked_sample\": \"{}\"", json_escape(&f.masked_sample))?;
+            writeln!(
+                w,
+                "          \"detector\": \"{}\",",
+                json_escape(&f.detector)
+            )?;
+            writeln!(
+                w,
+                "          \"category\": \"{}\",",
+                json_escape(&f.category)
+            )?;
+            writeln!(
+                w,
+                "          \"confidence\": \"{}\",",
+                f.confidence.as_str()
+            )?;
+            write!(
+                w,
+                "          \"masked_sample\": \"{}\"",
+                json_escape(&f.masked_sample)
+            )?;
             if let Some(ln) = f.line_number {
                 write!(w, ",\n          \"line\": {}", ln)?;
             }
@@ -207,29 +231,27 @@ mod tests {
 
     #[test]
     fn summary_from_results() {
-        let results = vec![
-            FileResult {
-                path: "a.txt".into(),
-                findings_count: 2,
-                findings: vec![
-                    FindingReport {
-                        detector: "EMAIL".into(),
-                        category: "pii".into(),
-                        confidence: Confidence::High,
-                        masked_sample: "u***".into(),
-                        line_number: Some(1),
-                    },
-                    FindingReport {
-                        detector: "EMAIL".into(),
-                        category: "pii".into(),
-                        confidence: Confidence::High,
-                        masked_sample: "x***".into(),
-                        line_number: Some(2),
-                    },
-                ],
-                status: FileStatus::Processed,
-            },
-        ];
+        let results = vec![FileResult {
+            path: "a.txt".into(),
+            findings_count: 2,
+            findings: vec![
+                FindingReport {
+                    detector: "EMAIL".into(),
+                    category: "pii".into(),
+                    confidence: Confidence::High,
+                    masked_sample: "u***".into(),
+                    line_number: Some(1),
+                },
+                FindingReport {
+                    detector: "EMAIL".into(),
+                    category: "pii".into(),
+                    confidence: Confidence::High,
+                    masked_sample: "x***".into(),
+                    line_number: Some(2),
+                },
+            ],
+            status: FileStatus::Processed,
+        }];
         let summary = Summary::from_results(&results);
         assert_eq!(summary.files_processed, 1);
         assert_eq!(summary.total_findings, 2);

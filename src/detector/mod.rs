@@ -1,6 +1,6 @@
-pub mod secrets;
-pub mod pii;
 pub mod custom;
+pub mod pii;
+pub mod secrets;
 
 /// Confidence level for a detection match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -160,7 +160,8 @@ fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
             if f.start < last.end {
                 // Overlapping: keep the one with higher confidence or longer match
                 if f.confidence > last.confidence
-                    || (f.confidence == last.confidence && (f.end - f.start) > (last.end - last.start))
+                    || (f.confidence == last.confidence
+                        && (f.end - f.start) > (last.end - last.start))
                 {
                     let len = merged.len();
                     merged[len - 1] = f;
@@ -232,11 +233,7 @@ mod tests {
 
     #[test]
     fn detector_registry_allow_deny() {
-        let registry = DetectorRegistry::build_default(
-            &["EMAIL".to_string()],
-            &[],
-            &[],
-        );
+        let registry = DetectorRegistry::build_default(&["EMAIL".to_string()], &[], &[]);
         let names = registry.detector_names();
         assert_eq!(names, vec!["EMAIL"]);
     }

@@ -84,9 +84,9 @@ pub fn is_binary(bytes: &[u8]) -> bool {
 
 /// Write content to a file atomically: write to a temp file in the same dir, then rename.
 pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        RedactError::AtomicWrite("Cannot determine parent directory".into())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| RedactError::AtomicWrite("Cannot determine parent directory".into()))?;
     fs::create_dir_all(parent)?;
 
     let temp_name = format!(

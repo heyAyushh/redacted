@@ -197,11 +197,13 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
             }
             "--allow-pattern" => {
                 i += 1;
-                cli.allow_patterns.push(require_value(args, i, "--allow-pattern")?);
+                cli.allow_patterns
+                    .push(require_value(args, i, "--allow-pattern")?);
             }
             "--deny-pattern" => {
                 i += 1;
-                cli.deny_patterns.push(require_value(args, i, "--deny-pattern")?);
+                cli.deny_patterns
+                    .push(require_value(args, i, "--deny-pattern")?);
             }
             "--dry-run" => cli.dry_run = true,
             "--fail-on-find" => cli.fail_on_find = true,
@@ -331,7 +333,8 @@ mod tests {
 
     #[test]
     fn parse_file_input() {
-        let cli = parse_args_from(&args(&["redact", "--input", "f.txt", "--output", "o.txt"])).unwrap();
+        let cli =
+            parse_args_from(&args(&["redact", "--input", "f.txt", "--output", "o.txt"])).unwrap();
         assert_eq!(cli.input, Some("f.txt".into()));
         assert_eq!(cli.output, Some("o.txt".into()));
     }

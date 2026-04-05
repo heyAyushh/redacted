@@ -3,7 +3,11 @@ use crate::detector::Finding;
 /// Apply redactions to text based on findings.
 /// Replaces each finding span with a redaction marker.
 /// Findings must be sorted by start position and non-overlapping.
-pub fn apply_redactions(text: &str, findings: &[Finding], custom_replacement: Option<&str>) -> String {
+pub fn apply_redactions(
+    text: &str,
+    findings: &[Finding],
+    custom_replacement: Option<&str>,
+) -> String {
     if findings.is_empty() {
         return text.to_string();
     }
