@@ -56,44 +56,56 @@ impl Config {
         };
 
         if let Some(ref config_path) = cli.config {
-            config.merge_toml(Path::new(config_path))?;
+            config.merge_toml(Path::new(config_path), &cli.explicit_flags)?;
         }
 
         Ok(config)
     }
 
-    fn merge_toml(&mut self, path: &Path) -> Result<()> {
+    /// Merge TOML config values, but only for flags NOT explicitly set on the CLI.
+    fn merge_toml(
+        &mut self,
+        path: &Path,
+        explicit: &std::collections::HashSet<String>,
+    ) -> Result<()> {
         let content = fs::read_to_string(path).map_err(|e| {
             RedactError::Config(format!("Cannot read config '{}': {}", path.display(), e))
         })?;
 
         let values = parse_simple_toml(&content)?;
 
-        // Only apply config values if they weren't explicitly set on CLI
         if self.replacement.is_none() {
             if let Some(v) = values.get("replacement") {
                 self.replacement = Some(v.clone());
             }
         }
-        if let Some(v) = values.get("max_file_size") {
-            if self.max_file_size == 25 * 1024 * 1024 {
+        if !explicit.contains("max_file_size") {
+            if let Some(v) = values.get("max_file_size") {
                 if let Ok(n) = v.parse::<u64>() {
                     self.max_file_size = n;
                 }
             }
         }
-        if let Some(v) = values.get("include_hidden") {
-            if !self.include_hidden && v == "true" {
-                self.include_hidden = true;
+        if !explicit.contains("include_hidden") {
+            if let Some(v) = values.get("include_hidden") {
+                if v == "true" {
+                    self.include_hidden = true;
+                } else if v == "false" {
+                    self.include_hidden = false;
+                }
             }
         }
-        if let Some(v) = values.get("follow_symlinks") {
-            if !self.follow_symlinks && v == "true" {
-                self.follow_symlinks = true;
+        if !explicit.contains("follow_symlinks") {
+            if let Some(v) = values.get("follow_symlinks") {
+                if v == "true" {
+                    self.follow_symlinks = true;
+                } else if v == "false" {
+                    self.follow_symlinks = false;
+                }
             }
         }
-        if let Some(v) = values.get("binary") {
-            if self.binary == BinaryMode::Skip {
+        if !explicit.contains("binary") {
+            if let Some(v) = values.get("binary") {
                 self.binary = match v.as_str() {
                     "fail" => BinaryMode::Fail,
                     "best-effort" => BinaryMode::BestEffort,
@@ -212,5 +224,66 @@ my_key = "sk_[a-z]+"
         let config = Config::from_cli(&cli).unwrap();
         assert!(config.recursive);
         assert!(!config.follow_symlinks);
+    }
+
+    #[test]
+    fn explicit_cli_flag_overrides_toml() {
+        use std::collections::HashSet;
+        let dir = std::env::temp_dir().join("redact_config_override_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("test.toml");
+        std::fs::write(
+            &config_path,
+            "follow_symlinks = true\nbinary = \"fail\"\nmax_file_size = 999\n",
+        )
+        .unwrap();
+
+        let mut cli = CliArgs::default();
+        cli.config = Some(config_path.to_str().unwrap().to_string());
+        // Explicitly set --no-follow-symlinks and --binary skip
+        cli.follow_symlinks = false;
+        cli.explicit_flags.insert("follow_symlinks".into());
+        cli.binary = BinaryMode::Skip;
+        cli.explicit_flags.insert("binary".into());
+        cli.max_file_size = 25 * 1024 * 1024;
+        cli.explicit_flags.insert("max_file_size".into());
+
+        let config = Config::from_cli(&cli).unwrap();
+        // CLI must win even though TOML says otherwise
+        assert!(
+            !config.follow_symlinks,
+            "CLI --no-follow-symlinks must override TOML"
+        );
+        assert_eq!(
+            config.binary,
+            BinaryMode::Skip,
+            "CLI --binary skip must override TOML"
+        );
+        assert_eq!(
+            config.max_file_size,
+            25 * 1024 * 1024,
+            "CLI --max-file-size must override TOML"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn toml_applies_when_flag_not_explicit() {
+        let dir = std::env::temp_dir().join("redact_config_apply_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("test.toml");
+        std::fs::write(&config_path, "follow_symlinks = true\n").unwrap();
+
+        let mut cli = CliArgs::default();
+        cli.config = Some(config_path.to_str().unwrap().to_string());
+        // No explicit flag set — TOML should apply
+        let config = Config::from_cli(&cli).unwrap();
+        assert!(
+            config.follow_symlinks,
+            "TOML should apply when flag not explicitly set"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

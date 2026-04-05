@@ -357,12 +357,21 @@ impl Detector for PasswordAssignDetector {
         for line in text.lines() {
             let lower = line.to_ascii_lowercase();
             let mut matched = false;
-            // Try longest keywords first to avoid substring double-match
             for kw in &keywords {
                 if matched {
                     break;
                 }
                 if let Some(kw_pos) = lower.find(kw) {
+                    // Word-boundary check: reject if the keyword is a substring
+                    // of a larger word (e.g. "compass", "passport", "bypass")
+                    let before_ok =
+                        kw_pos == 0 || !lower.as_bytes()[kw_pos - 1].is_ascii_alphabetic();
+                    let after_pos = kw_pos + kw.len();
+                    let after_ok = after_pos >= lower.len()
+                        || !lower.as_bytes()[after_pos].is_ascii_alphabetic();
+                    if !before_ok || !after_ok {
+                        continue;
+                    }
                     if let Some(finding) =
                         scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
                     {
@@ -760,6 +769,35 @@ mod tests {
         let text = "The secretary went home.";
         let findings = d.detect(text);
         assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn no_false_positive_compass() {
+        let d = PasswordAssignDetector;
+        let findings = d.detect("compass=abc1234");
+        assert_eq!(
+            findings.len(),
+            0,
+            "Should not match 'pass' inside 'compass'"
+        );
+    }
+
+    #[test]
+    fn no_false_positive_passport() {
+        let d = PasswordAssignDetector;
+        let findings = d.detect("passport=XYZ999");
+        assert_eq!(
+            findings.len(),
+            0,
+            "Should not match 'pass' inside 'passport'"
+        );
+    }
+
+    #[test]
+    fn no_false_positive_bypass() {
+        let d = PasswordAssignDetector;
+        let findings = d.detect("bypass=true");
+        assert_eq!(findings.len(), 0, "Should not match 'pass' inside 'bypass'");
     }
 
     #[test]

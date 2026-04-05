@@ -1,4 +1,5 @@
 use crate::errors::{RedactError, Result};
+use std::collections::HashSet;
 use std::env;
 
 /// Binary handling mode for non-text files.
@@ -41,6 +42,9 @@ pub struct CliArgs {
     pub threads: Option<usize>,
     pub show_help: bool,
     pub show_version: bool,
+    /// Tracks which flags were explicitly provided on the CLI,
+    /// so config file values only apply to unset flags.
+    pub explicit_flags: HashSet<String>,
 }
 
 impl Default for CliArgs {
@@ -68,6 +72,7 @@ impl Default for CliArgs {
             threads: None,
             show_help: false,
             show_version: false,
+            explicit_flags: HashSet::new(),
         }
     }
 }
@@ -235,6 +240,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                         )));
                     }
                 };
+                cli.explicit_flags.insert("binary".into());
             }
             "--max-file-size" => {
                 i += 1;
@@ -245,10 +251,20 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                         val
                     ))
                 })?;
+                cli.explicit_flags.insert("max_file_size".into());
             }
-            "--include-hidden" => cli.include_hidden = true,
-            "--no-follow-symlinks" => cli.follow_symlinks = false,
-            "--follow-symlinks" => cli.follow_symlinks = true,
+            "--include-hidden" => {
+                cli.include_hidden = true;
+                cli.explicit_flags.insert("include_hidden".into());
+            }
+            "--no-follow-symlinks" => {
+                cli.follow_symlinks = false;
+                cli.explicit_flags.insert("follow_symlinks".into());
+            }
+            "--follow-symlinks" => {
+                cli.follow_symlinks = true;
+                cli.explicit_flags.insert("follow_symlinks".into());
+            }
             "--threads" => {
                 i += 1;
                 let val = require_value(args, i, "--threads")?;

@@ -157,16 +157,24 @@ fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
     }
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
     for f in findings {
-        if let Some(last) = merged.last() {
+        if let Some(last) = merged.last_mut() {
             if f.start < last.end {
-                // Overlapping: keep the one with higher confidence or longer match
+                // Overlapping: expand the span to cover both findings (union),
+                // and keep the higher-confidence detector name. This ensures
+                // no fragment of a matched secret is left exposed.
+                let union_start = std::cmp::min(last.start, f.start);
+                let union_end = std::cmp::max(last.end, f.end);
                 if f.confidence > last.confidence
                     || (f.confidence == last.confidence
                         && (f.end - f.start) > (last.end - last.start))
                 {
-                    let len = merged.len();
-                    merged[len - 1] = f;
+                    last.detector_name = f.detector_name;
+                    last.category = f.category;
+                    last.confidence = f.confidence;
                 }
+                last.start = union_start;
+                last.end = union_end;
+                last.matched_len = union_end - union_start;
                 continue;
             }
         }
@@ -208,7 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn merge_overlapping_keeps_higher_confidence() {
+    #[test]
+    fn merge_overlapping_uses_union_span_and_higher_confidence() {
         let findings = vec![
             Finding {
                 detector_name: "a",
@@ -230,6 +239,38 @@ mod tests {
         let merged = merge_overlapping(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "b");
+        // Span must be the union: 0..15, not 5..15
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 15);
+    }
+
+    #[test]
+    fn merge_overlapping_never_shrinks_span() {
+        // Higher-confidence finding is strictly inside the lower one
+        let findings = vec![
+            Finding {
+                detector_name: "wide",
+                category: "test",
+                start: 0,
+                end: 20,
+                confidence: Confidence::Medium,
+                matched_len: 20,
+            },
+            Finding {
+                detector_name: "narrow",
+                category: "test",
+                start: 5,
+                end: 10,
+                confidence: Confidence::High,
+                matched_len: 5,
+            },
+        ];
+        let merged = merge_overlapping(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "narrow");
+        // Must keep the wider span to avoid leaking the uncovered prefix/suffix
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 20);
     }
 
     #[test]

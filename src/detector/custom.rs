@@ -20,15 +20,18 @@ use super::{Confidence, Detector, Finding};
 /// - Nested quantifiers
 /// - Unbounded repetition of complex groups
 pub struct CustomDetector {
-    name: String,
+    name: &'static str,
     pattern: CompiledPattern,
 }
 
 impl CustomDetector {
     pub fn new(name: String, pattern_str: String) -> Option<Self> {
         let compiled = compile_pattern(&pattern_str)?;
+        // Leak once at construction time. Custom detectors are created once at
+        // startup and live for the process lifetime, so this is bounded.
+        let leaked: &'static str = Box::leak(name.into_boxed_str());
         Some(Self {
-            name,
+            name: leaked,
             pattern: compiled,
         })
     }
@@ -36,9 +39,7 @@ impl CustomDetector {
 
 impl Detector for CustomDetector {
     fn name(&self) -> &'static str {
-        // Leak is acceptable here: custom detectors are created once at startup.
-        // Alternative would be returning &str with a lifetime, but the trait requires 'static.
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 
     fn category(&self) -> &'static str {
