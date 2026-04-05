@@ -21,7 +21,7 @@ fn find_prefix_case_insensitive(text: &[u8], start: usize, prefix: &[u8]) -> boo
         return false;
     }
     for (i, &expected) in prefix.iter().enumerate() {
-        if text[start + i].to_ascii_lowercase() != expected.to_ascii_lowercase() {
+        if !text[start + i].eq_ignore_ascii_case(&expected) {
             return false;
         }
     }
@@ -253,12 +253,18 @@ impl Detector for GenericApiKeyDetector {
         for line in text.lines() {
             let lower = line.to_ascii_lowercase();
             for kw in &keywords {
-                if let Some(kw_pos) = lower.find(kw) {
+                let mut search_from = 0;
+                while search_from < lower.len() {
+                    let Some(rel_pos) = lower[search_from..].find(kw) else {
+                        break;
+                    };
+                    let kw_pos = search_from + rel_pos;
                     if let Some(finding) =
                         scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
                     {
                         findings.push(finding);
                     }
+                    search_from = kw_pos + kw.len();
                 }
             }
         }
@@ -361,7 +367,13 @@ impl Detector for PasswordAssignDetector {
                 if matched {
                     break;
                 }
-                if let Some(kw_pos) = lower.find(kw) {
+                let mut search_from = 0;
+                while search_from < lower.len() {
+                    let Some(rel_pos) = lower[search_from..].find(kw) else {
+                        break;
+                    };
+                    let kw_pos = search_from + rel_pos;
+
                     // Word-boundary check: reject if the keyword is a substring
                     // of a larger word (e.g. "compass", "passport", "bypass")
                     let before_ok =
@@ -369,15 +381,16 @@ impl Detector for PasswordAssignDetector {
                     let after_pos = kw_pos + kw.len();
                     let after_ok = after_pos >= lower.len()
                         || !lower.as_bytes()[after_pos].is_ascii_alphabetic();
-                    if !before_ok || !after_ok {
-                        continue;
+                    if before_ok && after_ok {
+                        if let Some(finding) =
+                            scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
+                        {
+                            findings.push(finding);
+                            matched = true;
+                            break;
+                        }
                     }
-                    if let Some(finding) =
-                        scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
-                    {
-                        findings.push(finding);
-                        matched = true;
-                    }
+                    search_from = kw_pos + kw.len();
                 }
             }
         }
@@ -582,7 +595,13 @@ impl Detector for GenericSecretAssignDetector {
         for line in text.lines() {
             let lower = line.to_ascii_lowercase();
             for kw in &keywords {
-                if let Some(kw_pos) = lower.find(kw) {
+                let mut search_from = 0;
+                while search_from < lower.len() {
+                    let Some(rel_pos) = lower[search_from..].find(kw) else {
+                        break;
+                    };
+                    let kw_pos = search_from + rel_pos;
+
                     // Avoid matching "secret" inside words like "secretary"
                     let after = kw_pos + kw.len();
                     if after < lower.len() {
@@ -594,6 +613,7 @@ impl Detector for GenericSecretAssignDetector {
                             && next_char != b':'
                             && next_char != b' '
                         {
+                            search_from = kw_pos + kw.len();
                             continue;
                         }
                     }
@@ -602,6 +622,7 @@ impl Detector for GenericSecretAssignDetector {
                     {
                         findings.push(finding);
                     }
+                    search_from = kw_pos + kw.len();
                 }
             }
         }
@@ -620,11 +641,7 @@ fn scan_key_value_pair(
 ) -> Option<Finding> {
     let after_kw = &line[kw_pos..];
     // Find the separator: =, :, or whitespace-separated
-    let sep_idx = after_kw.find(['=', ':']);
-    let sep_idx = match sep_idx {
-        Some(idx) => idx,
-        None => return None,
-    };
+    let sep_idx = after_kw.find(['=', ':'])?;
 
     let value_start_in_line = kw_pos + sep_idx + 1;
     if value_start_in_line >= line.len() {
@@ -798,6 +815,30 @@ mod tests {
         let d = PasswordAssignDetector;
         let findings = d.detect("bypass=true");
         assert_eq!(findings.len(), 0, "Should not match 'pass' inside 'bypass'");
+    }
+
+    #[test]
+    fn password_assignment_uses_later_keyword_when_first_is_embedded_word() {
+        let d = PasswordAssignDetector;
+        let findings = d.detect("compass=bad password=goodsecret123");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].detector_name, "PASSWORD");
+    }
+
+    #[test]
+    fn generic_secret_assignment_finds_second_keyword_on_same_line() {
+        let d = GenericSecretAssignDetector;
+        let findings = d.detect("notasecretary=x token=abc12345");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].detector_name, "GENERIC_SECRET");
+    }
+
+    #[test]
+    fn generic_api_key_finds_later_occurrence_when_first_value_too_short() {
+        let d = GenericApiKeyDetector;
+        let findings = d.detect("api_key=x api_key=abcdefghi");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].detector_name, "API_KEY");
     }
 
     #[test]

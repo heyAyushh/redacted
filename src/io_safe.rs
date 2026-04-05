@@ -40,15 +40,12 @@ pub fn stdin_is_piped() -> bool {
 pub fn read_file(path: &Path, max_size: u64) -> Result<String> {
     let metadata = fs::metadata(path)?;
     if metadata.len() > max_size {
-        return Err(RedactError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "File '{}' exceeds max size ({} > {} bytes)",
-                path.display(),
-                metadata.len(),
-                max_size
-            ),
-        )));
+        return Err(RedactError::Io(io::Error::other(format!(
+            "File '{}' exceeds max size ({} > {} bytes)",
+            path.display(),
+            metadata.len(),
+            max_size
+        ))));
     }
 
     let bytes = fs::read(path)?;
@@ -66,6 +63,26 @@ pub fn read_file(path: &Path, max_size: u64) -> Result<String> {
             format!("File '{}' contains invalid UTF-8", path.display()),
         ))
     })
+}
+
+/// Read a file in best-effort mode.
+///
+/// Unlike `read_file`, this never rejects binary or invalid UTF-8 content
+/// (other than size checks). Bytes are decoded lossily so callers can still
+/// attempt redaction on mixed-content files.
+pub fn read_file_best_effort(path: &Path, max_size: u64) -> Result<String> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > max_size {
+        return Err(RedactError::Io(io::Error::other(format!(
+            "File '{}' exceeds max size ({} > {} bytes)",
+            path.display(),
+            metadata.len(),
+            max_size
+        ))));
+    }
+
+    let bytes = fs::read(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Detect if content is binary by checking for null bytes and high ratio of non-text bytes.

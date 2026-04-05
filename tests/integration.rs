@@ -339,6 +339,21 @@ fn directory_requires_output() {
 }
 
 #[test]
+fn directory_in_place_without_output_is_allowed() {
+    let dir = temp_dir("dir_in_place_only");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    let file = input_dir.join("a.txt");
+    fs::write(&file, "email: user@example.com").unwrap();
+
+    let (_, stderr, code) = run(&["--input", input_dir.to_str().unwrap(), "--in-place"]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let content = fs::read_to_string(&file).unwrap();
+    assert!(content.contains("[REDACTED:EMAIL]"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn directory_dry_run_no_output_required() {
     let dir = temp_dir("dir_dryrun");
     let input_dir = dir.join("input");
@@ -509,6 +524,42 @@ fn binary_file_skipped() {
 
     let (_, stderr, code) = run(&["--input", binary_file.to_str().unwrap()]);
     assert!(code == 0 || code == 1, "code: {}, stderr: {}", code, stderr);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn binary_file_best_effort_single_file_processes_lossy_text() {
+    let dir = temp_dir("binary_best_effort_file");
+    let binary_file = dir.join("binary.dat");
+    fs::write(&binary_file, b"token=sk_live_secret123\x00\xff").unwrap();
+
+    let (stdout, stderr, code) = run(&[
+        "--input",
+        binary_file.to_str().unwrap(),
+        "--binary",
+        "best-effort",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:STRIPE_KEY]"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn binary_file_best_effort_directory_not_error() {
+    let dir = temp_dir("binary_best_effort_dir");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.bin"), b"token=sk_live_secret123\x00\xff").unwrap();
+
+    let (_, stderr, code) = run(&[
+        "--input",
+        input_dir.to_str().unwrap(),
+        "--binary",
+        "best-effort",
+        "--summary",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(!stderr.contains("Error"));
     let _ = fs::remove_dir_all(&dir);
 }
 

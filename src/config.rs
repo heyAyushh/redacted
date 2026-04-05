@@ -166,8 +166,9 @@ fn parse_simple_toml(content: &str) -> Result<HashMap<String, String>> {
             let val = line[eq_pos + 1..].trim();
 
             // Strip quotes
-            let val = if (val.starts_with('"') && val.ends_with('"'))
-                || (val.starts_with('\'') && val.ends_with('\''))
+            let val = if val.len() >= 2
+                && ((val.starts_with('"') && val.ends_with('"'))
+                    || (val.starts_with('\'') && val.ends_with('\'')))
             {
                 &val[1..val.len() - 1]
             } else {
@@ -219,6 +220,14 @@ my_key = "sk_[a-z]+"
     }
 
     #[test]
+    fn parse_toml_single_quote_char_value_does_not_panic() {
+        let content = "key = \"\"\nkey2 = '\''\n";
+        let map = parse_simple_toml(content).unwrap();
+        assert_eq!(map.get("key").unwrap(), "");
+        assert_eq!(map.get("key2").unwrap(), "'");
+    }
+
+    #[test]
     fn config_from_cli_defaults() {
         let cli = CliArgs::default();
         let config = Config::from_cli(&cli).unwrap();
@@ -228,7 +237,6 @@ my_key = "sk_[a-z]+"
 
     #[test]
     fn explicit_cli_flag_overrides_toml() {
-        use std::collections::HashSet;
         let dir = std::env::temp_dir().join("redact_config_override_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

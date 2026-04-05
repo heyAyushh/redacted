@@ -216,7 +216,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn merge_overlapping_uses_union_span_and_higher_confidence() {
         let findings = vec![
             Finding {

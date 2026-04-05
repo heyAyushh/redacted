@@ -157,12 +157,19 @@ fn process_text(text: &str, config: &Config, registry: &DetectorRegistry) -> err
     }
 }
 
+fn read_file_with_mode(path: &Path, config: &Config) -> errors::Result<String> {
+    match config.binary {
+        BinaryMode::BestEffort => io_safe::read_file_best_effort(path, config.max_file_size),
+        _ => io_safe::read_file(path, config.max_file_size),
+    }
+}
+
 fn process_single_file(
     path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
 ) -> errors::Result<i32> {
-    let text = match io_safe::read_file(path, config.max_file_size) {
+    let text = match read_file_with_mode(path, config) {
         Ok(t) => t,
         Err(e) => {
             // If binary and skip mode, report and succeed
@@ -252,11 +259,17 @@ fn process_directory(
     config: &Config,
     registry: &DetectorRegistry,
 ) -> errors::Result<i32> {
-    // Directory mode requires --output, --dry-run, --summary, or --report-json
-    if config.output.is_none() && !config.dry_run && !config.summary && !config.report_json {
+    // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
+    if config.output.is_none()
+        && !config.in_place
+        && !config.dry_run
+        && !config.summary
+        && !config.report_json
+    {
         return Err(RedactError::Usage(
-            "Directory input requires --output <DIR>, --dry-run, --summary, or --report-json.\n  \
+            "Directory input requires --output <DIR>, --in-place, --dry-run, --summary, or --report-json.\n  \
              redacted --input logs/ --output cleaned/\n  \
+             redacted --input logs/ --in-place\n  \
              redacted --input logs/ --dry-run"
                 .into(),
         ));
@@ -277,7 +290,7 @@ fn process_directory(
     for entry in entries {
         match entry {
             traverse::FileEntry::Eligible { path, relative } => {
-                let text = match io_safe::read_file(&path, config.max_file_size) {
+                let text = match read_file_with_mode(&path, config) {
                     Ok(t) => t,
                     Err(e) => {
                         let msg = e.to_string();

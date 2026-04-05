@@ -51,9 +51,9 @@ impl Detector for CustomDetector {
         let mut findings = Vec::new();
         let bytes = text.as_bytes();
 
-        for i in 0..bytes.len() {
+        for (i, _) in text.char_indices() {
             if let Some(end) = try_match(&self.pattern.ops, bytes, i) {
-                if end > i {
+                if end > i && text.is_char_boundary(end) {
                     findings.push(Finding {
                         detector_name: name,
                         category: self.category(),
@@ -285,6 +285,16 @@ mod tests {
         assert!(findings.len() >= 1);
         assert_eq!(findings[0].start, 0);
         assert_eq!(findings[0].end, 3);
+    }
+
+    #[test]
+    fn custom_detect_utf8_boundaries_are_valid() {
+        let det = CustomDetector::new("ANY".into(), ".+".into()).unwrap();
+        let text = "é";
+        let findings = det.detect(text);
+        assert!(findings
+            .iter()
+            .all(|f| text.is_char_boundary(f.start) && text.is_char_boundary(f.end)));
     }
 
     #[test]
