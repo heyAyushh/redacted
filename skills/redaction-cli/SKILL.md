@@ -79,6 +79,10 @@ These defaults are baked into `CliArgs::default()` and must not be weakened:
 
 ## 5. How to Add a New Detector
 
+Use `detector` as the contributor-facing word for new native scan logic. Reserve
+`bridge` / `adapter` for rare integrations that wrap an external engine or tool
+instead of participating directly in the in-process `Detector` pipeline.
+
 ### 5a. Adding a built-in secret detector
 
 1. Open `src/detector/secrets.rs`.
