@@ -21,6 +21,7 @@ pub enum FileStatus {
 pub struct FindingReport {
     pub detector: String,
     pub category: String,
+    pub action: String,
     pub confidence: Confidence,
     pub masked_sample: String,
     pub line_number: Option<usize>,
@@ -146,6 +147,7 @@ pub fn write_json_report<W: Write>(
                 "          \"category\": \"{}\",",
                 json_escape(&f.category)
             )?;
+            writeln!(w, "          \"action\": \"{}\",", json_escape(&f.action))?;
             writeln!(
                 w,
                 "          \"confidence\": \"{}\",",
@@ -200,10 +202,11 @@ pub fn line_number_for_offset(text: &str, offset: usize) -> usize {
 }
 
 /// Build a FindingReport from a Finding and the source text.
-pub fn finding_to_report(finding: &Finding, text: &str) -> FindingReport {
+pub fn finding_to_report(finding: &Finding, text: &str, action: &str) -> FindingReport {
     FindingReport {
         detector: finding.detector_name.to_string(),
         category: finding.category.to_string(),
+        action: action.to_string(),
         confidence: finding.confidence,
         masked_sample: finding.masked_sample(text),
         line_number: Some(line_number_for_offset(text, finding.start)),
@@ -238,6 +241,7 @@ mod tests {
                 FindingReport {
                     detector: "EMAIL".into(),
                     category: "pii".into(),
+                    action: "redact".into(),
                     confidence: Confidence::High,
                     masked_sample: "u***".into(),
                     line_number: Some(1),
@@ -245,6 +249,7 @@ mod tests {
                 FindingReport {
                     detector: "EMAIL".into(),
                     category: "pii".into(),
+                    action: "redact".into(),
                     confidence: Confidence::High,
                     masked_sample: "x***".into(),
                     line_number: Some(2),
