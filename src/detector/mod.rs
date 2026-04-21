@@ -104,6 +104,7 @@ impl DetectorRegistry {
             Box::new(secrets::GithubTokenDetector),
             Box::new(secrets::StripeKeyDetector),
             Box::new(secrets::GenericSecretAssignDetector),
+            Box::new(secrets::HighEntropyKeywordDetector),
             // PII
             Box::new(pii::EmailDetector),
             Box::new(pii::PhoneDetector),
