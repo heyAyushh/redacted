@@ -161,14 +161,21 @@ fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
         if let Some(last) = merged.last_mut() {
             if f.start < last.end {
                 // Overlapping: expand the span to cover both findings (union),
-                // and keep the higher-confidence detector name. This ensures
-                // no fragment of a matched secret is left exposed.
+                // and keep the most specific detector metadata for equal-confidence
+                // overlaps. This ensures no fragment of a matched secret is left
+                // exposed while avoiding detector-name drift for contained matches.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
-                if f.confidence > last.confidence
+                let last_strictly_contains_f = last.start <= f.start
+                    && last.end >= f.end
+                    && (last.start < f.start || last.end > f.end);
+                let contained_secret_overlap =
+                    last_strictly_contains_f && last.category == "secret" && f.category == "secret";
+                let prefer_new_metadata = f.confidence > last.confidence
                     || (f.confidence == last.confidence
-                        && (f.end - f.start) > (last.end - last.start))
-                {
+                        && ((f.end - f.start) > (last.end - last.start)
+                            || contained_secret_overlap));
+                if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
                     last.confidence = f.confidence;
@@ -271,6 +278,60 @@ mod tests {
         // Must keep the wider span to avoid leaking the uncovered prefix/suffix
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 20);
+    }
+
+    #[test]
+    fn merge_overlapping_equal_confidence_prefers_contained_detector_name() {
+        let findings = vec![
+            Finding {
+                detector_name: "HIGH_ENTROPY_SECRET",
+                category: "secret",
+                start: 0,
+                end: 40,
+                confidence: Confidence::Medium,
+                matched_len: 40,
+            },
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 7,
+                end: 40,
+                confidence: Confidence::Medium,
+                matched_len: 33,
+            },
+        ];
+        let merged = merge_overlapping(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "GENERIC_SECRET");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 40);
+    }
+
+    #[test]
+    fn merge_overlapping_equal_confidence_partial_overlap_keeps_longer_detector_name() {
+        let findings = vec![
+            Finding {
+                detector_name: "FIRST",
+                category: "secret",
+                start: 0,
+                end: 12,
+                confidence: Confidence::Medium,
+                matched_len: 12,
+            },
+            Finding {
+                detector_name: "SECOND",
+                category: "secret",
+                start: 8,
+                end: 24,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+        let merged = merge_overlapping(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "SECOND");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 24);
     }
 
     #[test]
