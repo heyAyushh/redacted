@@ -19,17 +19,45 @@ The `Cargo.toml` has **zero entries** under `[dependencies]`. The entire binary 
 
 There are no `unsafe` blocks anywhere in the codebase. All memory safety guarantees of the Rust compiler apply.
 
-### No Network Access
+### Offline Default Scan Path
 
-`redacted` never opens a network socket. It does not:
+The built-in `redacted` scan path never opens a network socket. It does not:
 
 - Phone home.
 - Check for updates.
 - Send telemetry.
 - Resolve DNS.
-- Make HTTP requests.
+- Make HTTP requests during normal scanning.
 
-Input is read from local files or stdin. Output is written to local files or stdout/stderr. That's it.
+Input is read from local files or stdin. Output is written to local files or
+stdout/stderr. That's it for the core binary path.
+
+### Explicit Provider Downloads
+
+The optional privacy-filter provider workflow is separate from the default
+guarantee above.
+
+- `redacted provider install ...` and `redacted provider enable ...` may
+  download an external provider bundle on purpose.
+- `redacted --privacy-filter ...` never downloads anything during a scan.
+- Provider bundles are installed under a dedicated app-data directory, verified
+  when installed, and selected explicitly before they can be used.
+
+### Provider Trust Boundary
+
+The provider subsystem is intentionally **not** part of the hardened core
+guarantee.
+
+- The Rust-only default path keeps the original minimal, offline-by-default
+  security posture.
+- Provider mode is an explicit adapter boundary with a larger runtime surface.
+- OpenAI and Ollama adapters are optional lower-trust integrations, not
+  equivalent to the core detector pipeline.
+- The Ollama adapter is also an experimental generative-extraction path rather
+  than a native token-classification runtime, so it should not be treated as
+  equivalent in fidelity to the OpenAI Privacy Filter path.
+- If a provider runtime crashes, hangs, or misclassifies text, that impacts the
+  optional provider pass, not the default core scan path.
 
 ### No Regex Engine
 

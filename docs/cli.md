@@ -2,12 +2,15 @@
 
 ## Synopsis
 
-```
+``` 
 redacted [OPTIONS]
+redacted provider <COMMAND> [OPTIONS]
 echo "text" | redacted [OPTIONS]
 ```
 
-The binary is called `redacted`. There is no subcommand — flags are passed directly to the binary.
+The binary is called `redacted`. Normal scans still use flags directly. The only
+subcommand family is `redacted provider ...`, which manages optional
+privacy-filter bundles outside the hardened Rust-only core scan path.
 
 ---
 
@@ -34,6 +37,7 @@ If none of the above are provided and stdin is a terminal (not piped), the tool 
 | `--format` | `text\|json` | Output format. `text` (default) writes redacted content. `json` writes a structured JSON report to stdout |
 | `--report-json` | — | Write redacted content normally **and** emit a structured JSON report to stderr |
 | `--replacement` | `<STRING>` | Custom replacement string instead of the default `[REDACTED:<TYPE>]` marker |
+| `--privacy-filter` | — | Run the active privacy-filter provider as one extra optional detection pass |
 
 ### Default Replacement Format
 
@@ -113,6 +117,56 @@ Binary detection samples the first 8192 bytes and checks for null bytes or a hig
 | `--threads` | `<N>` | Number of worker threads for directory mode |
 | `--help`, `-h` | — | Show help text and exit |
 | `--version`, `-V` | — | Show version and exit |
+
+---
+
+## Provider Commands
+
+Use `redacted provider ...` to install, verify, and switch optional
+privacy-filter bundles. This provider path is explicit and lower-trust than the
+default Rust-only detector path because it wraps external runtimes.
+
+Current support levels:
+
+- `openai/privacy-filter-v1` is the supported token-span path
+- `ollama/gpt-oss-v1` is an experimental generative-extraction path
+
+| Command | Description |
+|---------|-------------|
+| `redacted provider enable <provider-or-target>` | Easy onboarding: install if missing, verify, and activate |
+| `redacted provider install <provider-or-target>` | Download and verify a bundle without activating it |
+| `redacted provider use <provider-or-target>` | Switch the active provider to an installed, verified bundle |
+| `redacted provider current` | Show the active exact target |
+| `redacted provider list` | Show aliases, exact targets, and local install state |
+| `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
+| `redacted provider disable` | Clear the active provider selection |
+
+Aliases are human-friendly shortcuts such as `openai` and `ollama`. Exact
+targets are stable IDs such as `openai/privacy-filter-v1` and
+`ollama/gpt-oss-v1`. When an alias is used, the CLI prints the resolved exact
+target before changing local state.
+
+Examples:
+
+```bash
+redacted provider enable openai
+redacted provider enable ollama
+redacted provider install openai/privacy-filter-v1
+redacted provider install ollama/gpt-oss-v1
+redacted provider use openai
+redacted provider use ollama
+redacted provider current
+redacted provider verify --all
+redacted provider disable
+```
+
+Notes:
+
+- `openai` resolves to `openai/privacy-filter-v1`
+- `ollama` resolves to `ollama/gpt-oss-v1`
+- `redacted --privacy-filter ...` never downloads anything during a scan
+- `redacted provider enable ollama` requires a running local Ollama API
+- `ollama` relies on structured JSON generation rather than a native token-classification runtime
 
 ---
 
@@ -218,6 +272,13 @@ redacted --text "user@example.com" --format json
 
 # Redacted text + JSON report to stderr
 redacted --text "user@example.com" --report-json 2>report.json
+
+# Run the extra provider-backed pass with the active provider
+redacted --privacy-filter --input logs/
+
+# Switch to the Ollama-backed provider first
+redacted provider enable ollama
+redacted --privacy-filter --input logs/
 ```
 
 ### Configuration File

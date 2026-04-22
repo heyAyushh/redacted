@@ -2,20 +2,22 @@
 
 **Production-grade CLI for redacting secrets and PII from text and files.**
 
-Zero external dependencies. Offline. Safe by default.
+Core binary: zero external dependencies, offline by default, safe by default.
+Optional privacy-filter providers: explicit local model bundles you install and enable yourself.
 
 ---
 
 ## Key Features
 
-- **Zero dependencies** — uses only the Rust standard library; no supply-chain risk.
-- **Fully offline** — never phones home, no network access required.
+- **Zero dependencies in the core binary** — uses only the Rust standard library; no crates.io supply-chain risk in the default scan path.
+- **Offline by default** — built-in scans never phone home or download anything.
 - **Safe by default** — skips binary files, ignores hidden dirs, refuses to follow symlinks, caps file size at 25 MiB.
 - **Atomic writes** — output is written to a temp file then renamed, so partial writes never corrupt data.
 - **Purpose-built scanners** — every detector is a hand-written, O(n), non-backtracking scanner. No regex engine, no ReDoS risk.
 - **CI-friendly** — `--fail-on-find` exits non-zero when secrets are detected; `--dry-run` previews without modifying files.
 - **Structured output** — `--format json` and `--report-json` produce machine-readable reports with masked samples (secrets are never leaked in reports).
 - **Extensible** — add custom patterns via `--pattern NAME=REGEX` or a TOML config file.
+- **Optional privacy-filter pass** — add a second local detection pass from an installed provider bundle with `--privacy-filter`.
 
 ---
 
@@ -65,6 +67,12 @@ redacted --input secrets.log --output clean.log
 
 # Redact a directory tree
 redacted --input logs/ --output cleaned/ --summary
+
+# Enable the default privacy-filter provider once
+redacted provider enable openai
+
+# Run the extra provider-backed pass
+redacted --input logs/ --output cleaned/ --summary --privacy-filter
 
 # Dry-run in CI (exit code 3 if secrets found)
 redacted --input . --fail-on-find --dry-run
@@ -133,6 +141,86 @@ redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 
 ---
 
+## Privacy Filter Providers
+
+`redacted` can run one extra optional detection pass from a local provider bundle.
+This is **off by default** and it does **not** replace the native detectors.
+
+The important trust boundary is:
+
+- The default Rust-only scan path keeps the original lightweight, offline-by-default hardening story.
+- Provider-backed privacy filtering is an **optional adapter mode** outside that hardened core path.
+- `redacted` still owns masking, reporting, retain rules, except rules, and file writes.
+
+Current built-in aliases and targets:
+
+- Alias: `openai`
+- Exact target: `openai/privacy-filter-v1`
+- Adapter: local OPF runner around the OpenAI Privacy Filter model
+
+- Alias: `ollama`
+- Exact target: `ollama/gpt-oss-v1`
+- Adapter: local Ollama API runner using structured JSON extraction
+- Support level: experimental
+
+### What It Does
+
+When you add `--privacy-filter`, `redacted`:
+
+1. Runs the normal built-in detectors.
+2. Runs the active local provider bundle once more over the same text.
+3. Merges both sets of findings.
+4. Applies the usual retain, except, report, and redact logic once.
+
+So the feature is an **extra pass**, not a second output mode and not a provider-owned redaction pipeline.
+
+### Human Onboarding
+
+```bash
+# Install, verify, and activate the default provider alias
+redacted provider enable openai
+
+# Or use the Ollama-backed adapter
+redacted provider enable ollama
+
+# Scan with the extra pass enabled
+redacted --privacy-filter --input logs/
+```
+
+The command prints the exact resolved target, for example:
+
+```text
+resolved target: openai/privacy-filter-v1
+```
+
+or:
+
+```text
+resolved target: ollama/gpt-oss-v1
+```
+
+### Switching Later
+
+```bash
+redacted provider list
+redacted provider current
+redacted provider use openai
+redacted provider use ollama
+redacted provider disable
+```
+
+### Important Behavior
+
+- `--privacy-filter` never downloads anything during a scan.
+- Provider downloads happen only through `redacted provider install ...` or `redacted provider enable ...`.
+- If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
+- The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
+- `openai` and `ollama` are both adapter modes, not extensions of the hardened core guarantee.
+- The Ollama target requires a running local Ollama API and may pull the configured local model during `install` or `enable`.
+- The Ollama target is an experimental generative-extraction path, not a native token-span runtime like the OpenAI Privacy Filter path.
+
+---
+
 ## CLI Reference
 
 ### Input
@@ -180,6 +268,7 @@ redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 | `--fail-on-find` | Exit non-zero if any findings detected |
 | `--summary` | Print summary to stderr |
 | `--config <PATH>` | TOML configuration file |
+| `--privacy-filter` | Run the active privacy-filter provider as one extra detection pass |
 
 ### Other
 
@@ -188,6 +277,27 @@ redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 | `--threads <N>` | Worker threads for directory mode |
 | `--help` | Show help |
 | `--version` | Show version |
+
+### Provider Commands
+
+```bash
+redacted provider enable <provider-or-target>
+redacted provider install <provider-or-target>
+redacted provider use <provider-or-target>
+redacted provider current
+redacted provider list
+redacted provider verify [<provider-or-target> | --all]
+redacted provider disable
+```
+
+Examples:
+
+```bash
+redacted provider enable openai
+redacted provider install openai/privacy-filter-v1
+redacted provider use openai
+redacted provider verify --all
+```
 
 ---
 
@@ -231,13 +341,14 @@ CLI flags always take precedence over config file values.
 ## Security Model
 
 - **No secrets in output.** Reports use `masked_sample` (first ≤4 chars + `***`). Full matches are never logged, printed, or serialised.
-- **No external dependencies.** Zero supply-chain surface. The entire codebase is auditable.
+- **No external dependencies in the core binary.** The default scan path stays in the Rust standard library.
 - **No regex engine.** All pattern matching uses purpose-built, O(n), non-backtracking scanners — immune to ReDoS.
 - **No `unsafe` code.** Safe Rust throughout.
 - **Atomic file writes.** Output is written to a temp file (`0600` permissions) then atomically renamed.
 - **Symlink containment.** Symlink targets are canonicalised and rejected if they escape the input root directory.
 - **Binary detection.** Files containing null bytes or a high ratio of non-text bytes are skipped by default.
 - **Bounded custom patterns.** The built-in mini-regex engine caps quantifier repetitions at 4096.
+- **Explicit provider boundary.** Optional provider bundles are installed separately, selected explicitly, and only run when `--privacy-filter` is present.
 
 ---
 
