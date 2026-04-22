@@ -1,6 +1,16 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 fn binary_path() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
@@ -47,11 +57,368 @@ fn run_with_stdin(args: &[&str], stdin: &str) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
+fn run_with_env(args: &[&str], envs: &[(String, String)]) -> (String, String, i32) {
+    let mut command = Command::new(binary_path());
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("Failed to execute binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, stderr, code)
+}
+
+fn run_with_stdin_env(
+    args: &[&str],
+    stdin: &str,
+    envs: &[(String, String)],
+) -> (String, String, i32) {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut command = Command::new(binary_path());
+    command.args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, stderr, code)
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("redact_integ_{}", name));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn provider_env(name: &str) -> (PathBuf, PathBuf, Vec<(String, String)>) {
+    let root = temp_dir(name);
+    let config_root = root.join("provider-config");
+    let data_root = root.join("provider-data");
+    fs::create_dir_all(&config_root).unwrap();
+    fs::create_dir_all(&data_root).unwrap();
+    let envs = vec![
+        (
+            "REDACTED_CONFIG_HOME".to_string(),
+            config_root.to_string_lossy().into_owned(),
+        ),
+        (
+            "REDACTED_DATA_HOME".to_string(),
+            data_root.to_string_lossy().into_owned(),
+        ),
+    ];
+    (config_root, data_root, envs)
+}
+
+struct FakeOllamaServer {
+    base_url: String,
+    address: String,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl FakeOllamaServer {
+    fn start(initial_models: &[&str]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let models = Arc::new(Mutex::new(
+            initial_models
+                .iter()
+                .map(|model| model.to_string())
+                .collect::<Vec<_>>(),
+        ));
+        let stop_flag = Arc::clone(&stop);
+        let model_state = Arc::clone(&models);
+        let handle = thread::spawn(move || {
+            while !stop_flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = handle_fake_ollama_connection(&mut stream, &model_state);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Self {
+            base_url: format!("http://{}/api", address),
+            address: address.to_string(),
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for FakeOllamaServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(&self.address).and_then(|stream| {
+            stream.shutdown(Shutdown::Both)?;
+            Ok(())
+        });
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn handle_fake_ollama_connection(
+    stream: &mut TcpStream,
+    model_state: &Arc<Mutex<Vec<String>>>,
+) -> std::io::Result<()> {
+    let request = read_http_request(stream)?;
+    let mut parts = request
+        .header
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default();
+
+    let (status, body) = match (method, path) {
+        ("GET", "/api/tags") => (200, fake_ollama_tags_response(model_state)),
+        ("POST", "/api/pull") => {
+            if let Some(model) = extract_json_string(&request.body, "model") {
+                let mut models = model_state.lock().unwrap();
+                if !models.iter().any(|existing| existing == &model) {
+                    models.push(model);
+                }
+            }
+            (200, "{\"status\":\"success\"}".to_string())
+        }
+        ("POST", "/api/generate") => (200, fake_ollama_generate_response(&request.body)),
+        _ => (404, "{\"error\":\"not found\"}".to_string()),
+    };
+
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        if status == 200 { "OK" } else { "Not Found" },
+        body.len(),
+        body
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
+struct FakeHttpRequest {
+    header: String,
+    body: String,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<FakeHttpRequest> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 4096];
+    let header_end = loop {
+        let bytes_read = stream.read(&mut temp)?;
+        if bytes_read == 0 {
+            break None;
+        }
+        buffer.extend_from_slice(&temp[..bytes_read]);
+        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break Some(position + 4);
+        }
+    }
+    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing headers"))?;
+
+    let header = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let content_length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    while buffer.len() < header_end + content_length {
+        let bytes_read = stream.read(&mut temp)?;
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..bytes_read]);
+    }
+
+    let body_bytes = &buffer[header_end..std::cmp::min(buffer.len(), header_end + content_length)];
+    Ok(FakeHttpRequest {
+        header,
+        body: String::from_utf8_lossy(body_bytes).to_string(),
+    })
+}
+
+fn fake_ollama_tags_response(model_state: &Arc<Mutex<Vec<String>>>) -> String {
+    let models = model_state.lock().unwrap();
+    let rendered = models
+        .iter()
+        .map(|model| format!("{{\"name\":\"{}\",\"model\":\"{}\"}}", model, model))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"models\":[{}]}}", rendered)
+}
+
+fn fake_ollama_generate_response(request_body: &str) -> String {
+    let mut spans = Vec::new();
+    if request_body.contains("Alice") {
+        spans.push("{\"label\":\"private_person\",\"text\":\"Alice\"}".to_string());
+    }
+    if request_body.contains("John Smith") {
+        spans.push("{\"label\":\"private_person\",\"text\":\"John Smith\"}".to_string());
+    }
+    if request_body.contains("123 Main Street, Springfield") {
+        spans.push(
+            "{\"label\":\"private_address\",\"text\":\"123 Main Street, Springfield\"}".to_string(),
+        );
+    }
+    if request_body.contains("1990-01-02") {
+        spans.push("{\"label\":\"private_date\",\"text\":\"1990-01-02\"}".to_string());
+    }
+    let payload = format!("{{\"spans\":[{}]}}", spans.join(","));
+    format!(
+        "{{\"model\":\"gpt-oss\",\"response\":{},\"done\":true}}",
+        json_string(&payload)
+    )
+}
+
+fn extract_json_string(body: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = body.find(&needle)? + needle.len();
+    let rest = &body[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn json_string(value: &str) -> String {
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+    format!("\"{}\"", escaped)
+}
+
+#[cfg(unix)]
+fn install_fake_provider_bundle(
+    config_root: &std::path::Path,
+    data_root: &std::path::Path,
+    runner_contents: &str,
+    activate: bool,
+) {
+    let bundle_root = data_root
+        .join("providers")
+        .join("openai")
+        .join("privacy-filter-v1");
+    fs::create_dir_all(bundle_root.join("runner")).unwrap();
+    fs::create_dir_all(bundle_root.join("model")).unwrap();
+    let runner_path = bundle_root.join("runner").join("fake_runner.py");
+    fs::write(&runner_path, runner_contents).unwrap();
+    fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        bundle_root.join("bundle.state"),
+        "schema_version=1\n\
+target=openai/privacy-filter-v1\n\
+provider=openai\n\
+model=privacy-filter-v1\n\
+adapter=openai-opf-local\n\
+runner_rel=runner/fake_runner.py\n\
+checkpoint_rel=model\n\
+runner_sha256=unused\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle_root.join("verified.state"),
+        "schema_version=1\n\
+target=openai/privacy-filter-v1\n\
+verified_unix_seconds=1\n",
+    )
+    .unwrap();
+    if activate {
+        fs::write(
+            config_root.join("active-provider.state"),
+            "target=openai/privacy-filter-v1\n",
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn fake_provider_runner() -> String {
+    r#"#!/usr/bin/env python3
+import argparse
+import json
+import os
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--target", required=True)
+parser.add_argument("--checkpoint", required=True)
+args = parser.parse_args()
+
+marker = os.environ.get("FAKE_PROVIDER_START_MARKER")
+if marker:
+    with open(marker, "a", encoding="utf-8") as handle:
+        handle.write("start\n")
+
+mode = os.environ.get("FAKE_PROVIDER_MODE", "normal")
+
+for raw_line in sys.stdin:
+    line = raw_line.strip()
+    if not line:
+        continue
+    if mode == "malformed":
+        sys.stdout.write("{bad json}\n")
+        sys.stdout.flush()
+        continue
+
+    request = json.loads(line)
+    text = request["text"]
+    spans = []
+    if text.startswith("Alice"):
+        spans.append({"label": "private_person", "start": 0, "end": 5})
+    date_value = "1990-01-02"
+    if date_value in text:
+        start = text.index(date_value)
+        spans.append({"label": "private_date", "start": start, "end": start + len(date_value)})
+
+    response = {
+        "schema_version": 1,
+        "request_id": request["request_id"],
+        "target": args.target,
+        "spans": spans,
+    }
+    sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+"#
+    .to_string()
 }
 
 // === Help and Version ===
@@ -72,6 +439,113 @@ fn version_flag() {
     assert!(stderr.contains("redacted 0.1.0"));
 }
 
+#[test]
+fn provider_help_flag() {
+    let (_, stderr, code) = run(&["provider", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted provider"));
+    assert!(stderr.contains("enable <provider-or-target>"));
+}
+
+#[test]
+fn provider_enable_help_flag() {
+    let (_, stderr, code) = run(&["provider", "enable", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted provider enable"));
+    assert!(stderr.contains("openai/privacy-filter-v1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_current_without_active_shows_onboarding() {
+    let (_config_root, _data_root, envs) = provider_env("provider_current_none");
+    let (stdout, _, code) = run_with_env(&["provider", "current"], &envs);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("No active provider configured"));
+    assert!(stdout.contains("redacted provider enable openai"));
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_use_alias_sets_exact_active_target() {
+    let (config_root, data_root, envs) = provider_env("provider_use_alias");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), false);
+
+    let (stdout, stderr, code) = run_with_env(&["provider", "use", "openai"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: openai/privacy-filter-v1"));
+
+    let active_state = fs::read_to_string(config_root.join("active-provider.state")).unwrap();
+    assert!(active_state.contains("openai/privacy-filter-v1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_enable_alias_reuses_verified_bundle() {
+    let (config_root, data_root, envs) = provider_env("provider_enable_alias");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), false);
+
+    let (stdout, stderr, code) = run_with_env(&["provider", "enable", "openai"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: openai/privacy-filter-v1"));
+    assert!(stdout.contains("verified: yes"));
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_enable_ollama_alias_installs_and_activates() {
+    let (_config_root, data_root, mut envs) = provider_env("provider_enable_ollama");
+    let server = FakeOllamaServer::start(&[]);
+    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
+
+    let (stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: ollama/gpt-oss-v1"));
+    assert!(stdout.contains("active: yes"));
+
+    let bundle_root = data_root
+        .join("providers")
+        .join("ollama")
+        .join("gpt-oss-v1");
+    assert!(bundle_root.join("bundle.state").exists());
+    assert!(bundle_root
+        .join("runtime")
+        .join("ollama-runtime.state")
+        .exists());
+    assert!(bundle_root
+        .join("runner")
+        .join("ollama_privacy_runner.py")
+        .exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_list_shows_aliases_and_install_state() {
+    let (config_root, data_root, envs) = provider_env("provider_list");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+
+    let (stdout, _, code) = run_with_env(&["provider", "list"], &envs);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Aliases:"));
+    assert!(stdout.contains("openai -> openai/privacy-filter-v1"));
+    assert!(stdout.contains("ollama -> ollama/gpt-oss-v1"));
+    assert!(stdout.contains("support=supported"));
+    assert!(stdout.contains("mode=token-span"));
+    assert!(stdout.contains("support=experimental"));
+    assert!(stdout.contains("mode=generative-extraction"));
+    assert!(stdout.contains("installed=yes"));
+    assert!(stdout.contains("active=yes"));
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_disable_is_idempotent() {
+    let (_config_root, _data_root, envs) = provider_env("provider_disable");
+    let (stdout, _, code) = run_with_env(&["provider", "disable"], &envs);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("already disabled"));
+}
+
 // === Text Mode ===
 
 #[test]
@@ -87,6 +561,98 @@ fn text_redacts_phone() {
     let (stdout, _, code) = run(&["--text", "call +1-555-867-5309"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("[REDACTED:PHONE]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_requires_active_provider() {
+    let (_config_root, _data_root, envs) = provider_env("privacy_requires_active");
+    let (_stdout, stderr, code) = run_with_env(
+        &["--text", "Alice user@example.com", "--privacy-filter"],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("No active privacy-filter provider is configured"));
+    assert!(stderr.contains("redacted provider enable openai"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_redacts_provider_findings_in_addition_to_built_ins() {
+    let (config_root, data_root, envs) = provider_env("privacy_text_merge");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--text",
+            "Alice emailed user@example.com on 1990-01-02",
+            "--privacy-filter",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:PRIVATE_PERSON]"));
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_respects_allow_pattern_for_provider_labels() {
+    let (config_root, data_root, envs) = provider_env("privacy_allow_pattern");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--text",
+            "Alice emailed user@example.com on 1990-01-02",
+            "--privacy-filter",
+            "--allow-pattern",
+            "PRIVATE_PERSON",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:PRIVATE_PERSON]"));
+    assert!(stdout.contains("user@example.com"));
+    assert!(stdout.contains("1990-01-02"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_reports_invalid_runner_json() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_bad_json");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "malformed".into()));
+
+    let (_stdout, stderr, code) = run_with_env(
+        &["--text", "Alice user@example.com", "--privacy-filter"],
+        &envs,
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Invalid provider response JSON"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_works_with_ollama_provider() {
+    let (_config_root, _data_root, mut envs) = provider_env("privacy_ollama_provider");
+    let server = FakeOllamaServer::start(&["gpt-oss"]);
+    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
+
+    let (_stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--text",
+            "John Smith lives at 123 Main Street, Springfield.",
+            "--privacy-filter",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:PRIVATE_PERSON]"));
+    assert!(stdout.contains("[REDACTED:PRIVATE_ADDRESS]"));
 }
 
 #[test]
@@ -229,6 +795,19 @@ fn stdin_redacts_multiple() {
     assert!(stdout.contains("[REDACTED:AWS_KEY]"));
 }
 
+#[cfg(unix)]
+#[test]
+fn privacy_filter_works_with_stdin() {
+    let (config_root, data_root, envs) = provider_env("privacy_stdin");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+
+    let (stdout, stderr, code) =
+        run_with_stdin_env(&["--privacy-filter"], "Alice user@example.com", &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:PRIVATE_PERSON]"));
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+}
+
 // === File Mode ===
 
 #[test]
@@ -364,6 +943,39 @@ fn directory_dry_run_no_output_required() {
     assert_eq!(code, 0);
     assert!(stderr.contains("Summary"));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_directory_reuses_runner_once_per_invocation() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_directory_runner_once");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    let marker_path = data_root.join("runner-starts.log");
+    envs.push((
+        "FAKE_PROVIDER_START_MARKER".into(),
+        marker_path.to_string_lossy().into_owned(),
+    ));
+
+    let input_dir = data_root.join("input");
+    let output_dir = data_root.join("output");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), "Alice emailed user@example.com").unwrap();
+    fs::write(input_dir.join("b.txt"), "Alice was born on 1990-01-02").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--output",
+            output_dir.to_str().unwrap(),
+            "--privacy-filter",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let marker = fs::read_to_string(&marker_path).unwrap();
+    assert_eq!(marker.lines().count(), 1);
 }
 
 // === Flags and Modes ===

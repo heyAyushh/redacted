@@ -5,6 +5,7 @@ mod errors;
 mod except;
 mod io_safe;
 mod policy;
+mod provider;
 mod redact;
 mod report;
 mod traverse;
@@ -14,6 +15,7 @@ use config::Config;
 use detector::DetectorRegistry;
 use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
 use policy::{FindingAction, FindingDecision};
+use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
 use std::path::Path;
 use std::process;
@@ -34,6 +36,9 @@ fn run() -> errors::Result<i32> {
 
     if let Some(ref except_args) = cli_args.except {
         return except::run_except_command(except_args);
+    }
+    if let Some(ref provider_args) = cli_args.provider {
+        return provider::run_provider_command(provider_args);
     }
 
     if cli_args.show_help {
@@ -59,10 +64,21 @@ fn run() -> errors::Result<i32> {
         &config.deny_patterns,
         &config.patterns,
     );
+    let mut provider_session = if config.privacy_filter {
+        Some(provider::start_active_session()?)
+    } else {
+        None
+    };
 
     // Determine input source (priority: text > input > stdin)
     if let Some(ref text) = config.text {
-        return process_text(text, &config, &registry, &except_rules);
+        return process_text(
+            text,
+            &config,
+            &registry,
+            provider_session.as_mut(),
+            &except_rules,
+        );
     }
 
     if let Some(ref input_path) = config.input {
@@ -75,9 +91,21 @@ fn run() -> errors::Result<i32> {
         }
 
         if path.is_file() {
-            return process_single_file(path, &config, &registry, &except_rules);
+            return process_single_file(
+                path,
+                &config,
+                &registry,
+                provider_session.as_mut(),
+                &except_rules,
+            );
         } else if path.is_dir() {
-            return process_directory(path, &config, &registry, &except_rules);
+            return process_directory(
+                path,
+                &config,
+                &registry,
+                provider_session.as_mut(),
+                &except_rules,
+            );
         } else {
             return Err(RedactError::Usage(format!(
                 "Input '{}' is neither a file nor a directory.",
@@ -89,7 +117,13 @@ fn run() -> errors::Result<i32> {
     // stdin fallback
     if io_safe::stdin_is_piped() {
         let text = io_safe::read_stdin()?;
-        return process_text(&text, &config, &registry, &except_rules);
+        return process_text(
+            &text,
+            &config,
+            &registry,
+            provider_session.as_mut(),
+            &except_rules,
+        );
     }
 
     Err(RedactError::Usage(
@@ -102,21 +136,42 @@ fn run() -> errors::Result<i32> {
     ))
 }
 
+fn collect_findings(
+    text: &str,
+    config: &Config,
+    registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
+) -> errors::Result<Vec<detector::Finding>> {
+    let mut findings = registry.detect_all(text);
+    if let Some(session) = provider_session {
+        let provider_findings = provider::detect_with_session(
+            session,
+            text,
+            &config.allow_patterns,
+            &config.deny_patterns,
+        )?;
+        findings.extend(provider_findings);
+    }
+    findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    Ok(detector::merge_findings(findings))
+}
+
 fn decide_findings(
     text: &str,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
     except_rules: &[except::ExceptRule],
-) -> Vec<FindingDecision> {
-    policy::decide_findings(
+) -> errors::Result<Vec<FindingDecision>> {
+    Ok(policy::decide_findings(
         text,
-        registry.detect_all(text),
+        collect_findings(text, config, registry, provider_session)?,
         &config.retain_detectors,
         &config.retain_literals,
         &config.except_detectors,
         &config.except_literals,
         except_rules,
-    )
+    ))
 }
 
 fn redacted_findings(decisions: &[FindingDecision]) -> Vec<detector::Finding> {
@@ -146,9 +201,10 @@ fn process_text(
     text: &str,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
-    let decisions = decide_findings(text, config, registry, except_rules);
+    let decisions = decide_findings(text, config, registry, provider_session, except_rules)?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -230,6 +286,7 @@ fn process_single_file(
     path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     let text = match read_file_with_mode(path, config) {
@@ -256,7 +313,7 @@ fn process_single_file(
         }
     };
 
-    let decisions = decide_findings(&text, config, registry, except_rules);
+    let decisions = decide_findings(&text, config, registry, provider_session, except_rules)?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -325,6 +382,7 @@ fn process_directory(
     dir_path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    mut provider_session: Option<&mut ProviderSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
@@ -391,7 +449,13 @@ fn process_directory(
                     }
                 };
 
-                let decisions = decide_findings(&text, config, registry, except_rules);
+                let decisions = decide_findings(
+                    &text,
+                    config,
+                    registry,
+                    provider_session.as_deref_mut(),
+                    except_rules,
+                )?;
                 let reportable = reportable_findings(&decisions);
                 let redactions = redacted_findings(&decisions);
                 let finding_count = reportable.len();

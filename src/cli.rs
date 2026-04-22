@@ -36,10 +36,40 @@ pub struct ExceptArgs {
     pub command: Option<ExceptSubcommand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderArgs {
+    pub help: Option<ProviderHelpTopic>,
+    pub command: Option<ProviderSubcommand>,
+}
+
 /// Parsed CLI arguments. All fields are explicit — no hidden state.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
     pub except: Option<ExceptArgs>,
+    pub provider: Option<ProviderArgs>,
     pub text: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
@@ -65,6 +95,7 @@ pub struct CliArgs {
     pub include_hidden: bool,
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
+    pub privacy_filter: bool,
     pub show_help: bool,
     pub show_version: bool,
     /// Tracks which flags were explicitly provided on the CLI,
@@ -76,6 +107,7 @@ impl Default for CliArgs {
     fn default() -> Self {
         Self {
             except: None,
+            provider: None,
             text: None,
             input: None,
             output: None,
@@ -101,6 +133,7 @@ impl Default for CliArgs {
             include_hidden: false,
             follow_symlinks: false,
             threads: None,
+            privacy_filter: false,
             show_help: false,
             show_version: false,
             explicit_flags: HashSet::new(),
@@ -117,10 +150,12 @@ pub fn print_help() {
 USAGE:
   redacted [OPTIONS]
   redacted except [--file <PATH>] <add|remove|list> [--detector <NAME> | --literal <VALUE>]
+  redacted provider <enable|install|use|current|list|verify|disable> [OPTIONS]
   echo "secret text" | redacted
   redacted --text "email me at user@example.com"
   redacted --input secrets.txt
   redacted --input logs/ --output cleaned/
+  redacted provider enable openai
 
 INPUT (resolved in this order):
   --text <TEXT>         Literal text to redact
@@ -147,6 +182,11 @@ DETECTORS:
                         Ignore this exact matched value during this scan (may be repeated)
   --except-file <PATH>   Load persisted retain rules from file
   --replacement <STRING>  Custom replacement (default: [REDACTED:<TYPE>])
+
+PRIVACY FILTER:
+  --privacy-filter      Run the active privacy-filter provider as an extra detection pass
+  redacted provider ... Manage install, activation, and verification for provider bundles
+                        Provider mode is optional and outside the hardened core scan path
 
 TRAVERSAL:
   --recursive           Recurse into directories (default: on)
@@ -183,10 +223,144 @@ EXAMPLES:
   redacted --input repo/ --output repo-clean/ --report-json
   redacted --text "user@example.com" --retain-detector EMAIL
   redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
+  redacted --text "Alice was born on 1990-01-02" --privacy-filter
+  redacted provider enable openai
+  redacted provider enable ollama
+  redacted provider list
   redacted except add --detector EMAIL
   redacted except list"#,
         version = VERSION,
     );
+}
+
+pub fn print_provider_help(topic: ProviderHelpTopic) {
+    let text = match topic {
+        ProviderHelpTopic::Root => {
+            r#"redacted provider — manage privacy-filter providers.
+
+USAGE:
+  redacted provider enable <provider-or-target>
+  redacted provider install <provider-or-target>
+  redacted provider use <provider-or-target>
+  redacted provider current
+  redacted provider list
+  redacted provider verify [<provider-or-target> | --all]
+  redacted provider disable
+
+OVERVIEW:
+  Provider aliases are human-friendly shortcuts such as `openai`.
+  Exact targets are persistent IDs such as `openai/privacy-filter-v1`.
+  Aliases always resolve to a pinned exact target and the command prints
+  the resolved target before it changes local state.
+  Provider mode is optional and lower-trust than the hardened Rust-only core scan path.
+  `openai` is the supported token-span path.
+  `ollama` is an experimental generative-extraction path.
+
+EXAMPLES:
+  redacted provider enable openai
+  redacted provider enable ollama
+  redacted provider install openai/privacy-filter-v1
+  redacted provider install ollama/gpt-oss-v1
+  redacted provider use openai
+  redacted provider use ollama
+  redacted provider current
+  redacted provider list
+  redacted provider verify --all
+  redacted provider disable
+
+NEXT STEP:
+  Once a provider is enabled, run scans with:
+    redacted --privacy-filter --input logs/"#
+        }
+        ProviderHelpTopic::Enable => {
+            r#"redacted provider enable — install if needed, verify, and activate a provider.
+
+USAGE:
+  redacted provider enable <provider-or-target>
+
+EXAMPLES:
+  redacted provider enable openai
+  redacted provider enable openai/privacy-filter-v1
+  redacted provider enable ollama
+  redacted provider enable ollama/gpt-oss-v1
+
+BEHAVIOR:
+  - Resolves aliases such as `openai` to a pinned exact target.
+  - Installs the bundle if it is missing.
+  - Verifies the installed bundle if no verification stamp is present.
+  - Marks the resolved exact target as active.
+  - Ollama targets require a running local Ollama API.
+  - Ollama targets are experimental and rely on structured JSON generation,
+    not a native token-classification runtime."#
+        }
+        ProviderHelpTopic::Install => {
+            r#"redacted provider install — download and verify a provider bundle without activating it.
+
+USAGE:
+  redacted provider install <provider-or-target>
+
+EXAMPLES:
+  redacted provider install openai
+  redacted provider install openai/privacy-filter-v1
+  redacted provider install ollama
+  redacted provider install ollama/gpt-oss-v1"#
+        }
+        ProviderHelpTopic::Use => {
+            r#"redacted provider use — switch the active provider to an installed, verified bundle.
+
+USAGE:
+  redacted provider use <provider-or-target>
+
+EXAMPLES:
+  redacted provider use openai
+  redacted provider use openai/privacy-filter-v1
+  redacted provider use ollama
+  redacted provider use ollama/gpt-oss-v1
+
+NOTE:
+  `use` does not download anything. Use `enable` for easy onboarding or
+  `install` first if you want a separate install step.
+  The `ollama` target is experimental and lower-fidelity than the supported
+  OpenAI token-span path."#
+        }
+        ProviderHelpTopic::Current => {
+            r#"redacted provider current — show the active provider target.
+
+USAGE:
+  redacted provider current"#
+        }
+        ProviderHelpTopic::List => {
+            r#"redacted provider list — show aliases, exact targets, and local install state.
+
+USAGE:
+  redacted provider list"#
+        }
+        ProviderHelpTopic::Verify => {
+            r#"redacted provider verify — re-hash installed provider artifacts.
+
+USAGE:
+  redacted provider verify [<provider-or-target> | --all]
+
+EXAMPLES:
+  redacted provider verify
+  redacted provider verify openai
+  redacted provider verify openai/privacy-filter-v1
+  redacted provider verify ollama
+  redacted provider verify ollama/gpt-oss-v1
+  redacted provider verify --all
+
+DEFAULT:
+  Without a selector or `--all`, the active provider is verified.
+  Ollama verification checks local runtime availability, not pinned model weights."#
+        }
+        ProviderHelpTopic::Disable => {
+            r#"redacted provider disable — clear the active provider selection.
+
+USAGE:
+  redacted provider disable"#
+        }
+    };
+    eprintln!("{}", text);
 }
 
 pub fn print_version() {
@@ -194,7 +368,7 @@ pub fn print_version() {
 }
 
 /// Hand-rolled argument parser. No external dependencies.
-/// Fails fast with actionable error messages per cli-for-agent skill.
+/// Fails fast with actionable error messages.
 pub fn parse_args() -> Result<CliArgs> {
     let raw: Vec<String> = env::args().collect();
     parse_args_from(&raw[1..])
@@ -203,6 +377,9 @@ pub fn parse_args() -> Result<CliArgs> {
 pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     if matches!(args.first().map(String::as_str), Some("except")) {
         return parse_except_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("provider")) {
+        return parse_provider_args(&args[1..]);
     }
 
     let mut cli = CliArgs::default();
@@ -348,6 +525,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                     ))
                 })?);
             }
+            "--privacy-filter" => cli.privacy_filter = true,
             other => {
                 return Err(RedactError::Usage(format!(
                     "Unknown argument '{}'\n  redacted --help",
@@ -408,6 +586,145 @@ fn parse_except_args(args: &[String]) -> Result<CliArgs> {
 
     cli.except = Some(except);
     Ok(cli)
+}
+
+fn parse_provider_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let provider = if args.is_empty() {
+        ProviderArgs {
+            help: Some(ProviderHelpTopic::Root),
+            command: None,
+        }
+    } else {
+        parse_provider_command(args)?
+    };
+    cli.provider = Some(provider);
+    Ok(cli)
+}
+
+fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
+    let first = args[0].as_str();
+    if first == "--help" || first == "-h" {
+        return Ok(ProviderArgs {
+            help: Some(ProviderHelpTopic::Root),
+            command: None,
+        });
+    }
+
+    let topic = provider_topic_from_name(first)?;
+    let has_help_flag = args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h");
+    if has_help_flag {
+        return Ok(ProviderArgs {
+            help: Some(topic),
+            command: None,
+        });
+    }
+
+    let command = match first {
+        "enable" => ProviderSubcommand::Enable {
+            selector: require_subcommand_selector(args, 1, "enable")?,
+        },
+        "install" => ProviderSubcommand::Install {
+            selector: require_subcommand_selector(args, 1, "install")?,
+        },
+        "use" => ProviderSubcommand::Use {
+            selector: require_subcommand_selector(args, 1, "use")?,
+        },
+        "current" => {
+            reject_extra_args(args, 1, "current")?;
+            ProviderSubcommand::Current
+        }
+        "list" => {
+            reject_extra_args(args, 1, "list")?;
+            ProviderSubcommand::List
+        }
+        "verify" => parse_provider_verify(args)?,
+        "disable" => {
+            reject_extra_args(args, 1, "disable")?;
+            ProviderSubcommand::Disable
+        }
+        other => {
+            return Err(RedactError::Usage(format!(
+                "Unknown provider command '{}'\n  redacted provider --help",
+                other
+            )));
+        }
+    };
+
+    Ok(ProviderArgs {
+        help: None,
+        command: Some(command),
+    })
+}
+
+fn parse_provider_verify(args: &[String]) -> Result<ProviderSubcommand> {
+    let mut selector: Option<String> = None;
+    let mut all = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => {
+                all = true;
+            }
+            value => {
+                if selector.is_some() || all {
+                    return Err(RedactError::Usage(
+                        "Provider verify accepts one selector or --all.\n  redacted provider verify openai\n  redacted provider verify --all".into(),
+                    ));
+                }
+                selector = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    Ok(ProviderSubcommand::Verify { selector, all })
+}
+
+fn provider_topic_from_name(name: &str) -> Result<ProviderHelpTopic> {
+    match name {
+        "enable" => Ok(ProviderHelpTopic::Enable),
+        "install" => Ok(ProviderHelpTopic::Install),
+        "use" => Ok(ProviderHelpTopic::Use),
+        "current" => Ok(ProviderHelpTopic::Current),
+        "list" => Ok(ProviderHelpTopic::List),
+        "verify" => Ok(ProviderHelpTopic::Verify),
+        "disable" => Ok(ProviderHelpTopic::Disable),
+        other => Err(RedactError::Usage(format!(
+            "Unknown provider command '{}'\n  redacted provider --help",
+            other
+        ))),
+    }
+}
+
+fn require_subcommand_selector(args: &[String], index: usize, command: &str) -> Result<String> {
+    if index >= args.len() {
+        return Err(RedactError::Usage(format!(
+            "Provider command '{}' requires <provider-or-target>.\n  redacted provider {} openai",
+            command, command
+        )));
+    }
+    if args.len() > index + 1 {
+        return Err(RedactError::Usage(format!(
+            "Provider command '{}' accepts a single <provider-or-target>.\n  redacted provider {} openai",
+            command, command
+        )));
+    }
+    Ok(args[index].clone())
+}
+
+fn reject_extra_args(args: &[String], allowed_len: usize, command: &str) -> Result<()> {
+    if args.len() > allowed_len {
+        return Err(RedactError::Usage(format!(
+            "Provider command '{}' does not accept extra arguments.\n  redacted provider {}",
+            command, command
+        )));
+    }
+    Ok(())
 }
 
 fn parse_except_selector(args: &[String], i: &mut usize) -> Result<ExceptRuleSelector> {
@@ -543,6 +860,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_provider_root_help() {
+        let cli = parse_args_from(&args(&["provider"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: Some(ProviderHelpTopic::Root),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_enable_alias() {
+        let cli = parse_args_from(&args(&["provider", "enable", "openai"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: None,
+                command: Some(ProviderSubcommand::Enable {
+                    selector: "openai".into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_verify_all() {
+        let cli = parse_args_from(&args(&["provider", "verify", "--all"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: None,
+                command: Some(ProviderSubcommand::Verify {
+                    selector: None,
+                    all: true,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_subcommand_help() {
+        let cli = parse_args_from(&args(&["provider", "use", "--help"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: Some(ProviderHelpTopic::Use),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_privacy_filter_flag() {
+        let cli = parse_args_from(&args(&["--text", "hello", "--privacy-filter"])).unwrap();
+        assert!(cli.privacy_filter);
+    }
+
+    #[test]
     fn parse_binary_mode() {
         let cli = parse_args_from(&args(&["--binary", "best-effort"])).unwrap();
         assert_eq!(cli.binary, BinaryMode::BestEffort);
@@ -568,5 +944,6 @@ mod tests {
         assert!(!cli.include_hidden);
         assert_eq!(cli.binary, BinaryMode::Skip);
         assert_eq!(cli.max_file_size, 25 * 1024 * 1024);
+        assert!(!cli.privacy_filter);
     }
 }

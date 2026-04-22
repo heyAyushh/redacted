@@ -5,6 +5,7 @@ pub mod errors;
 pub mod except;
 pub mod io_safe;
 pub mod policy;
+pub mod provider;
 pub mod redact;
 pub mod report;
 pub mod traverse;

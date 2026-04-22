@@ -143,7 +143,7 @@ impl DetectorRegistry {
             findings.extend(detector.detect(text));
         }
         findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
-        merge_overlapping(findings)
+        merge_findings(findings)
     }
 
     #[allow(dead_code)]
@@ -152,7 +152,9 @@ impl DetectorRegistry {
     }
 }
 
-fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
+/// Merge findings after sorting them by `start ASC, end DESC`.
+/// Overlapping spans are unioned to avoid leaving partially exposed matches.
+pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
@@ -243,7 +245,7 @@ mod tests {
                 matched_len: 10,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "b");
         // Span must be the union: 0..15, not 5..15
@@ -272,7 +274,7 @@ mod tests {
                 matched_len: 5,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "narrow");
         // Must keep the wider span to avoid leaking the uncovered prefix/suffix

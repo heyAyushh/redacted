@@ -1,0 +1,2782 @@
+use crate::cli::{print_provider_help, ProviderArgs, ProviderHelpTopic, ProviderSubcommand};
+use crate::detector::{Confidence, Finding};
+use crate::errors::{RedactError, Result, EXIT_SUCCESS};
+use crate::io_safe;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const PROVIDER_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_REQUEST_SCHEMA_VERSION: u32 = 1;
+const ACTIVE_PROVIDER_STATE_FILE: &str = "active-provider.state";
+const VERIFIED_PROVIDER_STATE_FILE: &str = "verified.state";
+const PROVIDER_BUNDLE_MANIFEST_FILE: &str = "bundle.state";
+const PROVIDER_BUNDLES_DIR: &str = "providers";
+const PROVIDER_RUNNER_DIR: &str = "runner";
+const PROVIDER_MODEL_DIR: &str = "model";
+const PROVIDER_RUNTIME_DIR: &str = "runtime";
+const OPENAI_PROVIDER_ALIAS: &str = "openai";
+const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
+const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
+const OLLAMA_PROVIDER_ALIAS: &str = "ollama";
+const OLLAMA_PRIVACY_TARGET: &str = "ollama/gpt-oss-v1";
+const OLLAMA_RUNNER_SCRIPT_NAME: &str = "ollama_privacy_runner.py";
+const OLLAMA_RUNTIME_STATE_FILE: &str = "ollama-runtime.state";
+const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
+const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
+const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
+const REDACTED_OLLAMA_BASE_URL_OVERRIDE: &str = "REDACTED_OLLAMA_BASE_URL";
+const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/api";
+const DEFAULT_OLLAMA_MODEL_NAME: &str = "gpt-oss";
+const HTTP_TIMEOUT_SECONDS: u64 = 120;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderAdapterKind {
+    OpenAiOpfLocal,
+    OllamaLocalApi,
+}
+
+impl ProviderAdapterKind {
+    fn manifest_name(self) -> &'static str {
+        match self {
+            Self::OpenAiOpfLocal => "openai-opf-local",
+            Self::OllamaLocalApi => "ollama-local-api",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        self.manifest_name()
+    }
+
+    fn trust_level(self) -> &'static str {
+        match self {
+            Self::OpenAiOpfLocal => "optional-external",
+            Self::OllamaLocalApi => "optional-service",
+        }
+    }
+
+    fn support_tier(self) -> &'static str {
+        match self {
+            Self::OpenAiOpfLocal => "supported",
+            Self::OllamaLocalApi => "experimental",
+        }
+    }
+
+    fn detection_mode(self) -> &'static str {
+        match self {
+            Self::OpenAiOpfLocal => "token-span",
+            Self::OllamaLocalApi => "generative-extraction",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelMapping {
+    provider_label: &'static str,
+    detector_name: &'static str,
+    category: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArtifactSpec {
+    bundle_rel: &'static str,
+    url: &'static str,
+    size_bytes: u64,
+    sha256: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProviderCatalogEntry {
+    target: &'static str,
+    provider: &'static str,
+    model: &'static str,
+    aliases: &'static [&'static str],
+    adapter: ProviderAdapterKind,
+    package: Option<ArtifactSpec>,
+    model_artifacts: &'static [ArtifactSpec],
+    labels: &'static [LabelMapping],
+    runtime_model_name: Option<&'static str>,
+}
+
+#[derive(Debug)]
+pub struct ProviderSession {
+    entry: &'static ProviderCatalogEntry,
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    request_counter: u64,
+}
+
+#[derive(Debug)]
+struct BundleManifest {
+    schema_version: u32,
+    target: String,
+    provider: String,
+    model: String,
+    adapter: String,
+    runner_rel: String,
+    entry_rel: Option<String>,
+    checkpoint_rel: String,
+    runner_sha256: String,
+}
+
+#[derive(Debug)]
+struct VerifiedState {
+    schema_version: u32,
+    target: String,
+    verified_unix_seconds: u64,
+}
+
+#[derive(Debug)]
+struct ActiveProviderState {
+    target: String,
+}
+
+#[derive(Debug)]
+struct InstallOutcome {
+    installed_now: bool,
+    bundle_root: PathBuf,
+}
+
+#[derive(Debug)]
+struct OllamaRuntimeState {
+    base_url: String,
+    model_name: String,
+}
+
+#[derive(Debug)]
+struct ProviderSpan {
+    label: String,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Debug)]
+struct ProviderResponse {
+    schema_version: u32,
+    request_id: String,
+    target: String,
+    spans: Vec<ProviderSpan>,
+    error: Option<String>,
+}
+
+const OPENAI_LABEL_MAPPINGS: [LabelMapping; 8] = [
+    LabelMapping {
+        provider_label: "account_number",
+        detector_name: "ACCOUNT_NUMBER",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_address",
+        detector_name: "PRIVATE_ADDRESS",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_email",
+        detector_name: "PRIVATE_EMAIL",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_person",
+        detector_name: "PRIVATE_PERSON",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_phone",
+        detector_name: "PRIVATE_PHONE",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_url",
+        detector_name: "PRIVATE_URL",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "private_date",
+        detector_name: "PRIVATE_DATE",
+        category: "pii",
+    },
+    LabelMapping {
+        provider_label: "secret",
+        detector_name: "SECRET",
+        category: "secret",
+    },
+];
+
+const OPENAI_PACKAGE_ARTIFACT: ArtifactSpec = ArtifactSpec {
+    bundle_rel: "downloads/opf-source.tar.gz",
+    url: "https://github.com/openai/privacy-filter/archive/2e8c95b9771eec29ef61012f6e5e836f9bad7635.tar.gz",
+    size_bytes: 88022,
+    sha256: "16f7241c5e4d24a31decaeef95b090268369ce4b79a6e20ca5795e377a2fb102",
+};
+
+const OPENAI_MODEL_ARTIFACTS: [ArtifactSpec; 4] = [
+    ArtifactSpec {
+        bundle_rel: "model/config.json",
+        url: "https://huggingface.co/openai/privacy-filter/resolve/main/original/config.json?download=1",
+        size_bytes: 707,
+        sha256: "048a20604a3622de208d30df57cd5424bb583639b9ba20ddd7da593d3f89a248",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/dtypes.json",
+        url: "https://huggingface.co/openai/privacy-filter/resolve/main/original/dtypes.json?download=1",
+        size_bytes: 4108,
+        sha256: "e936acb3d039b35ec55438af2fffd424a53c7685b895775c186b26c7df79fcc7",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/model.safetensors",
+        url: "https://huggingface.co/openai/privacy-filter/resolve/main/original/model.safetensors?download=1",
+        size_bytes: 2_798_984_088,
+        sha256: "9c262cbe68a0c8a50590a648ef8341a2b7d3be1fa11dfb79893fe0b03ce57b5c",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/viterbi_calibration.json",
+        url: "https://huggingface.co/openai/privacy-filter/resolve/main/original/viterbi_calibration.json?download=1",
+        size_bytes: 372,
+        sha256: "bbc8611ef08a55ed72d64856cbbbb9a91db8dfa881f0a92e2afbad6e4bbc775a",
+    },
+];
+
+const OPENAI_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
+    target: OPENAI_PRIVACY_TARGET,
+    provider: "openai",
+    model: "privacy-filter-v1",
+    aliases: &[OPENAI_PROVIDER_ALIAS],
+    adapter: ProviderAdapterKind::OpenAiOpfLocal,
+    package: Some(OPENAI_PACKAGE_ARTIFACT),
+    model_artifacts: &OPENAI_MODEL_ARTIFACTS,
+    labels: &OPENAI_LABEL_MAPPINGS,
+    runtime_model_name: None,
+};
+
+const OLLAMA_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
+    target: OLLAMA_PRIVACY_TARGET,
+    provider: "ollama",
+    model: "gpt-oss-v1",
+    aliases: &[OLLAMA_PROVIDER_ALIAS],
+    adapter: ProviderAdapterKind::OllamaLocalApi,
+    package: None,
+    model_artifacts: &[],
+    labels: &OPENAI_LABEL_MAPPINGS,
+    runtime_model_name: Some(DEFAULT_OLLAMA_MODEL_NAME),
+};
+
+const PROVIDER_CATALOG: [ProviderCatalogEntry; 2] = [OPENAI_PROVIDER_ENTRY, OLLAMA_PROVIDER_ENTRY];
+
+const OPENAI_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
+import argparse
+import json
+import sys
+
+from opf._api import OPF
+
+
+def build_char_to_byte_offsets(text: str) -> list[int]:
+    offsets = [0]
+    total = 0
+    for char in text:
+        total += len(char.encode("utf-8"))
+        offsets.append(total)
+    return offsets
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    args = parser.parse_args()
+
+    redactor = OPF(
+        model=args.checkpoint,
+        device="cpu",
+        output_mode="typed",
+        output_text_only=False,
+    )
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        request_id = "unknown"
+        try:
+            payload = json.loads(line)
+            request_id = str(payload.get("request_id", "unknown"))
+            text = payload.get("text")
+            schema_version = payload.get("schema_version")
+            if schema_version != 1 or not isinstance(text, str):
+                raise ValueError("invalid request schema")
+
+            result = redactor.redact(text)
+            byte_offsets = build_char_to_byte_offsets(result.text)
+            spans = []
+            for span in result.detected_spans:
+                start = int(span.start)
+                end = int(span.end)
+                spans.append(
+                    {
+                        "label": span.label,
+                        "start": byte_offsets[start],
+                        "end": byte_offsets[end],
+                    }
+                )
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "spans": spans,
+            }
+        except Exception as exc:
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "error": f"runtime error: {exc.__class__.__name__}",
+                "spans": [],
+            }
+
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"#;
+
+const OLLAMA_RUNNER_SCRIPT: &str = r##"#!/usr/bin/env python3
+import argparse
+import json
+import pathlib
+import sys
+import urllib.request
+
+LABELS = [
+    "account_number",
+    "private_address",
+    "private_date",
+    "private_email",
+    "private_person",
+    "private_phone",
+    "private_url",
+    "secret",
+]
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "spans": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "enum": LABELS},
+                    "text": {"type": "string"},
+                },
+                "required": ["label", "text"],
+            },
+        }
+    },
+    "required": ["spans"],
+}
+
+
+def load_runtime_config(runtime_dir: pathlib.Path) -> tuple[str, str]:
+    values: dict[str, str] = {}
+    config_path = runtime_dir / "ollama-runtime.state"
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values["base_url"], values["model_name"]
+
+
+def build_char_to_byte_offsets(text: str) -> list[int]:
+    offsets = [0]
+    total = 0
+    for char in text:
+        total += len(char.encode("utf-8"))
+        offsets.append(total)
+    return offsets
+
+
+def build_prompt(text: str) -> str:
+    return (
+        "Extract privacy-sensitive spans from the input text.\n"
+        "Return JSON only.\n"
+        "For each span, use one label from this list exactly: "
+        + ", ".join(LABELS)
+        + ".\n"
+        "For each span, return the exact substring from the input text in the `text` field.\n"
+        "Do not paraphrase, normalize, trim, or invent text.\n"
+        "Sort spans by first appearance in the input.\n"
+        "If nothing matches, return {\"spans\": []}.\n"
+        "Input text:\n"
+        + text
+    )
+
+
+def align_spans(text: str, raw_spans: list[dict]) -> list[dict]:
+    offsets = build_char_to_byte_offsets(text)
+    positioned = []
+    search_start = 0
+    for span in raw_spans:
+        label = span.get("label")
+        snippet = span.get("text")
+        if not isinstance(label, str) or not isinstance(snippet, str) or not snippet:
+            raise ValueError("invalid_span")
+        start = text.find(snippet, search_start)
+        if start == -1:
+            start = text.find(snippet)
+        if start == -1:
+            raise ValueError("span_not_found")
+        end = start + len(snippet)
+        search_start = end
+        positioned.append(
+            {
+                "label": label,
+                "start": offsets[start],
+                "end": offsets[end],
+            }
+        )
+    return positioned
+
+
+def generate(base_url: str, model_name: str, text: str) -> list[dict]:
+    body = {
+        "model": model_name,
+        "prompt": build_prompt(text),
+        "stream": False,
+        "format": SCHEMA,
+        "options": {"temperature": 0},
+        "keep_alive": "5m",
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/generate",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        payload = json.load(response)
+    content = payload.get("response")
+    if not isinstance(content, str):
+        raise ValueError("missing_response")
+    parsed = json.loads(content)
+    spans = parsed.get("spans", [])
+    if not isinstance(spans, list):
+        raise ValueError("invalid_schema")
+    return align_spans(text, spans)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    args = parser.parse_args()
+
+    base_url, model_name = load_runtime_config(pathlib.Path(args.checkpoint))
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        request_id = "unknown"
+        try:
+            payload = json.loads(line)
+            request_id = str(payload.get("request_id", "unknown"))
+            text = payload.get("text")
+            schema_version = payload.get("schema_version")
+            if schema_version != 1 or not isinstance(text, str):
+                raise ValueError("invalid_request_schema")
+            spans = generate(base_url, model_name, text)
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "spans": spans,
+            }
+        except Exception as exc:
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "error": f"runtime error: {exc.__class__.__name__}",
+                "spans": [],
+            }
+
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"##;
+
+pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
+    if let Some(topic) = args.help.clone() {
+        print_provider_help(topic);
+        return Ok(EXIT_SUCCESS);
+    }
+
+    match args.command.as_ref() {
+        Some(ProviderSubcommand::Enable { selector }) => {
+            let entry = resolve_catalog_entry(selector)?;
+            let bundle = bundle_root_for_entry(entry)?;
+            let installed_now = if is_bundle_installed(entry, &bundle)? {
+                if !has_verified_state(&bundle)? {
+                    verify_bundle(entry, &bundle)?;
+                }
+                false
+            } else {
+                install_target(entry)?.installed_now
+            };
+            ensure_ready_bundle(entry, &bundle)?;
+            activate_target(entry)?;
+            let message = format!(
+                "resolved target: {}\ninstalled: {}\nverified: yes\nactive: yes\npath: {}\n",
+                entry.target,
+                if installed_now { "yes" } else { "already" },
+                bundle.display()
+            );
+            io_safe::write_stdout(&message)?;
+        }
+        Some(ProviderSubcommand::Install { selector }) => {
+            let entry = resolve_catalog_entry(selector)?;
+            let outcome = install_target(entry)?;
+            let message = format!(
+                "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
+                entry.target,
+                if outcome.installed_now {
+                    "yes"
+                } else {
+                    "already"
+                },
+                outcome.bundle_root.display()
+            );
+            io_safe::write_stdout(&message)?;
+        }
+        Some(ProviderSubcommand::Use { selector }) => {
+            let entry = resolve_catalog_entry(selector)?;
+            let bundle = bundle_root_for_entry(entry)?;
+            ensure_ready_bundle(entry, &bundle)?;
+            activate_target(entry)?;
+            let message = format!(
+                "resolved target: {}\nactive: yes\npath: {}\n",
+                entry.target,
+                bundle.display()
+            );
+            io_safe::write_stdout(&message)?;
+        }
+        Some(ProviderSubcommand::Current) => {
+            if let Some(state) = load_active_provider_state()? {
+                let message = if let Some(entry) = find_catalog_entry_by_target(&state.target) {
+                    format!(
+                        "active target: {}\nadapter: {}\nmode: {}\nsupport: {}\ntrust: {}\n",
+                        state.target,
+                        entry.adapter.display_name(),
+                        entry.adapter.detection_mode(),
+                        entry.adapter.support_tier(),
+                        entry.adapter.trust_level()
+                    )
+                } else {
+                    format!("active target: {}\n", state.target)
+                };
+                io_safe::write_stdout(&message)?;
+            } else {
+                io_safe::write_stdout(
+                    "No active provider configured.\nSet one up with:\n  redacted provider enable openai\n",
+                )?;
+            }
+        }
+        Some(ProviderSubcommand::List) => {
+            io_safe::write_stdout(&format_provider_list()?)?;
+        }
+        Some(ProviderSubcommand::Verify { selector, all }) => {
+            if *all {
+                let mut verified_targets = Vec::new();
+                for entry in &PROVIDER_CATALOG {
+                    let bundle = bundle_root_for_entry(entry)?;
+                    if is_bundle_installed(entry, &bundle)? {
+                        verify_bundle(entry, &bundle)?;
+                        verified_targets.push(entry.target);
+                    }
+                }
+                if verified_targets.is_empty() {
+                    io_safe::write_stdout("No installed provider bundles found.\n")?;
+                } else {
+                    let mut output = String::from("Verified provider bundles:\n");
+                    for target in verified_targets {
+                        output.push_str("- ");
+                        output.push_str(target);
+                        output.push('\n');
+                    }
+                    io_safe::write_stdout(&output)?;
+                }
+            } else {
+                let entry = match selector.as_deref() {
+                    Some(value) => resolve_catalog_entry(value)?,
+                    None => {
+                        let active = load_active_provider_state()?.ok_or_else(|| {
+                            RedactError::Usage(
+                                "No active provider is configured.\n  redacted provider enable openai".into(),
+                            )
+                        })?;
+                        find_catalog_entry_by_target(&active.target).ok_or_else(|| {
+                            RedactError::Usage(format!(
+                                "Active provider target '{}' is not supported by this build.\n  redacted provider list",
+                                active.target
+                            ))
+                        })?
+                    }
+                };
+                let bundle = bundle_root_for_entry(entry)?;
+                verify_bundle(entry, &bundle)?;
+                let message = format!(
+                    "verified target: {}\npath: {}\n",
+                    entry.target,
+                    bundle.display()
+                );
+                io_safe::write_stdout(&message)?;
+            }
+        }
+        Some(ProviderSubcommand::Disable) => {
+            if let Some(state) = load_active_provider_state()? {
+                clear_active_provider_state()?;
+                let message = format!("disabled provider: {}\n", state.target);
+                io_safe::write_stdout(&message)?;
+            } else {
+                io_safe::write_stdout("Provider already disabled.\n")?;
+            }
+        }
+        None => {
+            print_provider_help(ProviderHelpTopic::Root);
+        }
+    }
+
+    Ok(EXIT_SUCCESS)
+}
+
+pub fn start_active_session() -> Result<ProviderSession> {
+    let active = load_active_provider_state()?.ok_or_else(|| {
+        RedactError::Usage(
+            "No active privacy-filter provider is configured.\n  redacted provider enable openai\n  redacted provider list".into(),
+        )
+    })?;
+    let entry = find_catalog_entry_by_target(&active.target).ok_or_else(|| {
+        RedactError::Usage(format!(
+            "Active provider target '{}' is not supported by this build.\n  redacted provider list",
+            active.target
+        ))
+    })?;
+    let bundle = bundle_root_for_entry(entry)?;
+    ensure_ready_bundle(entry, &bundle)?;
+
+    let manifest = load_bundle_manifest(&bundle_manifest_path(&bundle))?;
+    let runner = bundle.join(&manifest.runner_rel);
+    let checkpoint = bundle.join(&manifest.checkpoint_rel);
+    let mut command = Command::new(&runner);
+    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
+        command.arg(bundle.join(entry_rel));
+    }
+    command
+        .arg("--target")
+        .arg(entry.target)
+        .arg("--checkpoint")
+        .arg(&checkpoint)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = command.spawn().map_err(|error| {
+        RedactError::Detection(format!(
+            "Failed to start provider runner for '{}': {}",
+            entry.target, error
+        ))
+    })?;
+    let stdin = child.stdin.take().ok_or_else(|| {
+        RedactError::Detection(format!(
+            "Provider runner for '{}' did not expose stdin",
+            entry.target
+        ))
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        RedactError::Detection(format!(
+            "Provider runner for '{}' did not expose stdout",
+            entry.target
+        ))
+    })?;
+
+    Ok(ProviderSession {
+        entry,
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+        request_counter: 0,
+    })
+}
+
+pub fn detect_with_session(
+    session: &mut ProviderSession,
+    text: &str,
+    allow_patterns: &[String],
+    deny_patterns: &[String],
+) -> Result<Vec<Finding>> {
+    session.request_counter += 1;
+    let request_id = format!("req-{}", session.request_counter);
+    let request = format!(
+        "{{\"schema_version\":{},\"request_id\":\"{}\",\"text\":\"{}\"}}",
+        PROVIDER_REQUEST_SCHEMA_VERSION,
+        json_escape(&request_id),
+        json_escape(text)
+    );
+    session
+        .stdin
+        .write_all(request.as_bytes())
+        .map_err(|error| {
+            RedactError::Detection(format!("Failed to write provider request: {}", error))
+        })?;
+    session.stdin.write_all(b"\n").map_err(|error| {
+        RedactError::Detection(format!(
+            "Failed to write provider request newline: {}",
+            error
+        ))
+    })?;
+    session.stdin.flush().map_err(|error| {
+        RedactError::Detection(format!("Failed to flush provider request: {}", error))
+    })?;
+
+    let mut line = String::new();
+    let bytes_read = session.stdout.read_line(&mut line).map_err(|error| {
+        RedactError::Detection(format!("Failed to read provider response: {}", error))
+    })?;
+    if bytes_read == 0 {
+        return Err(RedactError::Detection(format!(
+            "Provider runner for '{}' exited without returning a response.",
+            session.entry.target
+        )));
+    }
+
+    let response = parse_provider_response(line.trim_end())?;
+    if response.schema_version != PROVIDER_REQUEST_SCHEMA_VERSION {
+        return Err(RedactError::Detection(format!(
+            "Provider '{}' returned unsupported schema version {}.",
+            session.entry.target, response.schema_version
+        )));
+    }
+    if response.request_id != request_id {
+        return Err(RedactError::Detection(format!(
+            "Provider '{}' returned a mismatched request id.",
+            session.entry.target
+        )));
+    }
+    if response.target != session.entry.target {
+        return Err(RedactError::Detection(format!(
+            "Provider '{}' returned response for unexpected target '{}'.",
+            session.entry.target, response.target
+        )));
+    }
+    if let Some(message) = response.error {
+        return Err(RedactError::Detection(format!(
+            "Provider '{}' failed: {}",
+            session.entry.target, message
+        )));
+    }
+
+    let mut findings = Vec::new();
+    for span in response.spans {
+        let mapping = session
+            .entry
+            .labels
+            .iter()
+            .find(|mapping| mapping.provider_label == span.label)
+            .ok_or_else(|| {
+                RedactError::Detection(format!(
+                    "Provider '{}' returned unknown label '{}'.",
+                    session.entry.target, span.label
+                ))
+            })?;
+        if span.end < span.start || span.end > text.len() {
+            return Err(RedactError::Detection(format!(
+                "Provider '{}' returned invalid span {}..{}.",
+                session.entry.target, span.start, span.end
+            )));
+        }
+        if !allow_patterns.is_empty()
+            && !allow_patterns
+                .iter()
+                .any(|name| name == mapping.detector_name)
+        {
+            continue;
+        }
+        if deny_patterns
+            .iter()
+            .any(|name| name == mapping.detector_name)
+        {
+            continue;
+        }
+        findings.push(Finding {
+            detector_name: mapping.detector_name,
+            category: mapping.category,
+            start: span.start,
+            end: span.end,
+            confidence: Confidence::Medium,
+            matched_len: span.end.saturating_sub(span.start),
+        });
+    }
+
+    Ok(findings)
+}
+
+impl Drop for ProviderSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn format_provider_list() -> Result<String> {
+    let active_target = load_active_provider_state()?.map(|state| state.target);
+    let mut output = String::new();
+    output.push_str("Aliases:\n");
+    for entry in &PROVIDER_CATALOG {
+        for alias in entry.aliases {
+            output.push_str(&format!("- {} -> {}\n", alias, entry.target));
+        }
+    }
+    output.push_str("Targets:\n");
+    for entry in &PROVIDER_CATALOG {
+        let bundle = bundle_root_for_entry(entry)?;
+        let installed = is_bundle_installed(entry, &bundle)?;
+        let verified = if installed {
+            has_verified_state(&bundle)?
+        } else {
+            false
+        };
+        let active = active_target
+            .as_ref()
+            .map(|target| target == entry.target)
+            .unwrap_or(false);
+        output.push_str(&format!(
+            "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}\n",
+            entry.target,
+            entry.adapter.display_name(),
+            entry.adapter.detection_mode(),
+            entry.adapter.support_tier(),
+            entry.adapter.trust_level(),
+            yes_or_no(installed),
+            yes_or_no(verified),
+            yes_or_no(active),
+        ));
+    }
+    Ok(output)
+}
+
+fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome> {
+    let bundle_root = bundle_root_for_entry(entry)?;
+    if is_bundle_installed(entry, &bundle_root)? {
+        if !has_verified_state(&bundle_root)? {
+            verify_bundle(entry, &bundle_root)?;
+        }
+        return Ok(InstallOutcome {
+            installed_now: false,
+            bundle_root,
+        });
+    }
+
+    let providers_root = providers_root()?;
+    fs::create_dir_all(&providers_root).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create provider directory '{}': {}",
+            providers_root.display(),
+            error
+        ))
+    })?;
+    let temp_bundle = install_temp_bundle_path(entry)?;
+    if temp_bundle.exists() {
+        fs::remove_dir_all(&temp_bundle).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot clear temp provider directory '{}': {}",
+                temp_bundle.display(),
+                error
+            ))
+        })?;
+    }
+    fs::create_dir_all(&temp_bundle).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create temp provider directory '{}': {}",
+            temp_bundle.display(),
+            error
+        ))
+    })?;
+
+    let install_result = match entry.adapter {
+        ProviderAdapterKind::OpenAiOpfLocal => install_openai_bundle(entry, &temp_bundle),
+        ProviderAdapterKind::OllamaLocalApi => install_ollama_bundle(entry, &temp_bundle),
+    };
+
+    if let Err(error) = install_result {
+        let _ = fs::remove_dir_all(&temp_bundle);
+        return Err(error);
+    }
+
+    let parent = bundle_root.parent().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Cannot determine provider bundle parent for '{}'.",
+            bundle_root.display()
+        ))
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create provider bundle parent '{}': {}",
+            parent.display(),
+            error
+        ))
+    })?;
+    fs::rename(&temp_bundle, &bundle_root).map_err(|error| {
+        let _ = fs::remove_dir_all(&temp_bundle);
+        RedactError::Config(format!(
+            "Cannot move provider bundle into place '{}': {}",
+            bundle_root.display(),
+            error
+        ))
+    })?;
+    if entry.adapter == ProviderAdapterKind::OpenAiOpfLocal {
+        repair_bundle_runtime_paths(&bundle_root)?;
+    }
+
+    Ok(InstallOutcome {
+        installed_now: true,
+        bundle_root,
+    })
+}
+
+fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Result<()> {
+    if !bundle_root.exists() {
+        return Err(RedactError::Usage(format!(
+            "Provider bundle '{}' is not installed.\n  redacted provider install {}",
+            entry.target, entry.target
+        )));
+    }
+    if entry.adapter == ProviderAdapterKind::OpenAiOpfLocal {
+        repair_bundle_runtime_paths(bundle_root)?;
+    }
+    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    if manifest.schema_version != PROVIDER_SCHEMA_VERSION
+        || manifest.target != entry.target
+        || manifest.adapter != entry.adapter.manifest_name()
+    {
+        return Err(RedactError::Config(format!(
+            "Provider bundle '{}' has invalid manifest metadata.",
+            entry.target
+        )));
+    }
+    let runner_path = bundle_root.join(&manifest.runner_rel);
+    if !runner_path.is_file() {
+        return Err(RedactError::Config(format!(
+            "Provider bundle '{}' is missing runner executable '{}'.",
+            entry.target,
+            runner_path.display()
+        )));
+    }
+    let integrity_path = runner_integrity_path(bundle_root, &manifest);
+    if !integrity_path.is_file() {
+        return Err(RedactError::Config(format!(
+            "Provider bundle '{}' is missing runner integrity target '{}'.",
+            entry.target,
+            integrity_path.display()
+        )));
+    }
+    let actual_runner_sha256 = sha256_hex_of_path(&integrity_path)?;
+    if actual_runner_sha256 != manifest.runner_sha256 {
+        return Err(RedactError::Config(format!(
+            "Provider runner '{}' failed integrity verification.",
+            integrity_path.display()
+        )));
+    }
+    if let Some(package) = entry.package.as_ref() {
+        verify_artifact_at_path(package, &bundle_root.join(package.bundle_rel))?;
+    }
+    for artifact in entry.model_artifacts {
+        verify_artifact_at_path(artifact, &bundle_root.join(artifact.bundle_rel))?;
+    }
+    if entry.adapter == ProviderAdapterKind::OllamaLocalApi {
+        verify_ollama_runtime_bundle(bundle_root)?;
+    }
+    save_verified_state(
+        bundle_root,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
+    let package = entry.package.as_ref().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Provider '{}' is missing package metadata.",
+            entry.target
+        ))
+    })?;
+    let package_path = temp_bundle.join(package.bundle_rel);
+    download_and_verify_artifact(package, &package_path)?;
+
+    create_virtualenv(&temp_bundle.join("venv"))?;
+    install_package_from_archive(temp_bundle, &package_path)?;
+
+    for artifact in entry.model_artifacts {
+        let path = temp_bundle.join(artifact.bundle_rel);
+        download_and_verify_artifact(artifact, &path)?;
+    }
+
+    let runner_path = temp_bundle
+        .join(PROVIDER_RUNNER_DIR)
+        .join(OPENAI_RUNNER_SCRIPT_NAME);
+    write_openai_runner_script(&runner_path)?;
+    let runner_sha256 = sha256_hex_of_bytes(OPENAI_RUNNER_SCRIPT.as_bytes());
+    let manifest = BundleManifest {
+        schema_version: PROVIDER_SCHEMA_VERSION,
+        target: entry.target.to_string(),
+        provider: entry.provider.to_string(),
+        model: entry.model.to_string(),
+        adapter: entry.adapter.manifest_name().into(),
+        runner_rel: default_venv_python_rel().into(),
+        entry_rel: Some(
+            Path::new(PROVIDER_RUNNER_DIR)
+                .join(OPENAI_RUNNER_SCRIPT_NAME)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        checkpoint_rel: PROVIDER_MODEL_DIR.into(),
+        runner_sha256,
+    };
+    save_bundle_manifest(temp_bundle, &manifest)?;
+    save_verified_state(
+        temp_bundle,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn install_ollama_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
+    let model_name = entry.runtime_model_name.ok_or_else(|| {
+        RedactError::Config(format!(
+            "Provider '{}' is missing Ollama model metadata.",
+            entry.target
+        ))
+    })?;
+    let base_url = ollama_base_url();
+    ensure_ollama_model_available(&base_url, model_name, true)?;
+
+    let runtime_dir = temp_bundle.join(PROVIDER_RUNTIME_DIR);
+    fs::create_dir_all(&runtime_dir).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create Ollama runtime directory '{}': {}",
+            runtime_dir.display(),
+            error
+        ))
+    })?;
+    save_ollama_runtime_state(
+        &runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE),
+        &OllamaRuntimeState {
+            base_url,
+            model_name: model_name.into(),
+        },
+    )?;
+
+    let runner_path = temp_bundle
+        .join(PROVIDER_RUNNER_DIR)
+        .join(OLLAMA_RUNNER_SCRIPT_NAME);
+    write_ollama_runner_script(&runner_path)?;
+    let runner_sha256 = sha256_hex_of_bytes(OLLAMA_RUNNER_SCRIPT.as_bytes());
+    let manifest = BundleManifest {
+        schema_version: PROVIDER_SCHEMA_VERSION,
+        target: entry.target.to_string(),
+        provider: entry.provider.to_string(),
+        model: entry.model.to_string(),
+        adapter: entry.adapter.manifest_name().into(),
+        runner_rel: Path::new(PROVIDER_RUNNER_DIR)
+            .join(OLLAMA_RUNNER_SCRIPT_NAME)
+            .to_string_lossy()
+            .into_owned(),
+        entry_rel: None,
+        checkpoint_rel: PROVIDER_RUNTIME_DIR.into(),
+        runner_sha256,
+    };
+    save_bundle_manifest(temp_bundle, &manifest)?;
+    save_verified_state(
+        temp_bundle,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn download_and_verify_artifact(spec: &ArtifactSpec, path: &Path) -> Result<()> {
+    download_file_via_python(spec.url, path)?;
+    verify_artifact_at_path(spec, path)
+}
+
+fn verify_artifact_at_path(spec: &ArtifactSpec, path: &Path) -> Result<()> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        RedactError::Config(format!(
+            "Missing provider artifact '{}': {}",
+            path.display(),
+            error
+        ))
+    })?;
+    if metadata.len() != spec.size_bytes {
+        return Err(RedactError::Config(format!(
+            "Provider artifact '{}' has unexpected size {} (expected {}).",
+            path.display(),
+            metadata.len(),
+            spec.size_bytes
+        )));
+    }
+    let actual_sha256 = sha256_hex_of_path(path)?;
+    if actual_sha256 != spec.sha256 {
+        return Err(RedactError::Config(format!(
+            "Provider artifact '{}' failed SHA-256 verification.",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Result<()> {
+    if !is_bundle_installed(entry, bundle_root)? {
+        return Err(RedactError::Usage(format!(
+            "Provider bundle '{}' is not installed.\n  redacted provider enable {}",
+            entry.target, entry.provider
+        )));
+    }
+    if !has_verified_state(bundle_root)? {
+        return Err(RedactError::Usage(format!(
+            "Provider bundle '{}' has not been verified yet.\n  redacted provider verify {}",
+            entry.target, entry.target
+        )));
+    }
+    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    if manifest.target != entry.target || manifest.adapter != entry.adapter.manifest_name() {
+        return Err(RedactError::Config(format!(
+            "Provider bundle at '{}' does not match target '{}'.",
+            bundle_root.display(),
+            entry.target
+        )));
+    }
+    let runner_path = bundle_root.join(&manifest.runner_rel);
+    if !runner_path.is_file() {
+        return Err(RedactError::Config(format!(
+            "Provider bundle '{}' is missing runner executable '{}'.",
+            entry.target,
+            runner_path.display()
+        )));
+    }
+    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
+        let entry_path = bundle_root.join(entry_rel);
+        if !entry_path.is_file() {
+            return Err(RedactError::Config(format!(
+                "Provider bundle '{}' is missing runner entry '{}'.",
+                entry.target,
+                entry_path.display()
+            )));
+        }
+    }
+    let checkpoint_path = bundle_root.join(&manifest.checkpoint_rel);
+    if !checkpoint_path.exists() {
+        return Err(RedactError::Config(format!(
+            "Provider bundle '{}' is missing checkpoint path '{}'.",
+            entry.target,
+            checkpoint_path.display()
+        )));
+    }
+    if entry.adapter == ProviderAdapterKind::OllamaLocalApi {
+        verify_ollama_runtime_bundle(bundle_root)?;
+    }
+    Ok(())
+}
+
+fn runner_integrity_path(bundle_root: &Path, manifest: &BundleManifest) -> PathBuf {
+    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
+        bundle_root.join(entry_rel)
+    } else {
+        bundle_root.join(&manifest.runner_rel)
+    }
+}
+
+fn repair_bundle_runtime_paths(bundle_root: &Path) -> Result<()> {
+    let current_root = bundle_root.to_string_lossy().into_owned();
+    let Some(embedded_root) = detect_embedded_bundle_root(bundle_root)? else {
+        return Ok(());
+    };
+    if embedded_root == current_root {
+        return Ok(());
+    }
+
+    for path in bundle_runtime_rewrite_candidates(bundle_root)? {
+        rewrite_bundle_root_in_text_file(&path, &embedded_root, &current_root)?;
+    }
+    Ok(())
+}
+
+fn detect_embedded_bundle_root(bundle_root: &Path) -> Result<Option<String>> {
+    let pyvenv_path = bundle_root.join("venv").join("pyvenv.cfg");
+    if pyvenv_path.is_file() {
+        let content = fs::read_to_string(&pyvenv_path).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot read virtualenv metadata '{}': {}",
+                pyvenv_path.display(),
+                error
+            ))
+        })?;
+        for line in content.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if key.trim() != "command" {
+                continue;
+            }
+            if let Some((_, venv_path)) = value.trim().rsplit_once(" -m venv ") {
+                if let Some(root) = strip_virtualenv_suffix(venv_path) {
+                    return Ok(Some(root.to_string()));
+                }
+            }
+        }
+    }
+
+    for scripts_dir in bundle_runtime_script_dirs(bundle_root) {
+        if !scripts_dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&scripts_dir).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot list runtime scripts in '{}': {}",
+                scripts_dir.display(),
+                error
+            ))
+        })? {
+            let path = entry
+                .map_err(|error| {
+                    RedactError::Config(format!(
+                        "Cannot inspect runtime script entry in '{}': {}",
+                        scripts_dir.display(),
+                        error
+                    ))
+                })?
+                .path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(first_line) = read_first_line(&path)? else {
+                continue;
+            };
+            if !first_line.starts_with("#!") {
+                continue;
+            }
+            let interpreter = &first_line[2..];
+            if let Some(index) = interpreter.find("/venv/") {
+                return Ok(Some(interpreter[..index].to_string()));
+            }
+            if let Some(index) = interpreter.find("\\venv\\") {
+                return Ok(Some(interpreter[..index].to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn strip_virtualenv_suffix(path: &str) -> Option<&str> {
+    path.strip_suffix("/venv")
+        .or_else(|| path.strip_suffix("\\venv"))
+}
+
+fn bundle_runtime_rewrite_candidates(bundle_root: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    let pyvenv_path = bundle_root.join("venv").join("pyvenv.cfg");
+    if pyvenv_path.is_file() {
+        paths.push(pyvenv_path);
+    }
+
+    for scripts_dir in bundle_runtime_script_dirs(bundle_root) {
+        if !scripts_dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&scripts_dir).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot list runtime scripts in '{}': {}",
+                scripts_dir.display(),
+                error
+            ))
+        })? {
+            let path = entry
+                .map_err(|error| {
+                    RedactError::Config(format!(
+                        "Cannot inspect runtime script entry in '{}': {}",
+                        scripts_dir.display(),
+                        error
+                    ))
+                })?
+                .path();
+            if path.is_file() {
+                paths.push(path);
+            }
+        }
+    }
+
+    let venv_root = bundle_root.join("venv");
+    if venv_root.is_dir() {
+        collect_named_files(&venv_root, "direct_url.json", &mut paths)?;
+    }
+
+    Ok(paths)
+}
+
+fn bundle_runtime_script_dirs(bundle_root: &Path) -> [PathBuf; 2] {
+    [
+        bundle_root.join("venv").join("bin"),
+        bundle_root.join("venv").join("Scripts"),
+    ]
+}
+
+fn collect_named_files(root: &Path, file_name: &str, output: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(root).map_err(|error| {
+        RedactError::Config(format!("Cannot list '{}': {}", root.display(), error))
+    })? {
+        let path = entry
+            .map_err(|error| {
+                RedactError::Config(format!(
+                    "Cannot inspect entry under '{}': {}",
+                    root.display(),
+                    error
+                ))
+            })?
+            .path();
+        if path.is_dir() {
+            collect_named_files(&path, file_name, output)?;
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name == file_name)
+            .unwrap_or(false)
+        {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn read_first_line(path: &Path) -> Result<Option<String>> {
+    let content = fs::read(path).map_err(|error| {
+        RedactError::Config(format!("Cannot read '{}': {}", path.display(), error))
+    })?;
+    if content.is_empty() {
+        return Ok(None);
+    }
+    let text = match std::str::from_utf8(&content) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    Ok(text.lines().next().map(ToString::to_string))
+}
+
+fn rewrite_bundle_root_in_text_file(path: &Path, old_root: &str, new_root: &str) -> Result<()> {
+    let content = fs::read(path).map_err(|error| {
+        RedactError::Config(format!("Cannot read '{}': {}", path.display(), error))
+    })?;
+    if !content
+        .windows(old_root.len())
+        .any(|window| window == old_root.as_bytes())
+    {
+        return Ok(());
+    }
+    let text = match String::from_utf8(content) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+    let rewritten = text.replace(old_root, new_root);
+    if rewritten == text {
+        return Ok(());
+    }
+
+    let permissions = fs::metadata(path)
+        .map_err(|error| {
+            RedactError::Config(format!("Cannot inspect '{}': {}", path.display(), error))
+        })?
+        .permissions();
+    fs::write(path, rewritten).map_err(|error| {
+        RedactError::Config(format!("Cannot rewrite '{}': {}", path.display(), error))
+    })?;
+    fs::set_permissions(path, permissions).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot restore permissions on '{}': {}",
+            path.display(),
+            error
+        ))
+    })?;
+    Ok(())
+}
+
+fn is_bundle_installed(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Result<bool> {
+    if !bundle_root.exists() {
+        return Ok(false);
+    }
+    let manifest_path = bundle_manifest_path(bundle_root);
+    if !manifest_path.is_file() {
+        return Ok(false);
+    }
+    let manifest = load_bundle_manifest(&manifest_path)?;
+    Ok(manifest.target == entry.target)
+}
+
+fn has_verified_state(bundle_root: &Path) -> Result<bool> {
+    let path = verified_state_path(bundle_root);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let state = load_verified_state(&path)?;
+    Ok(state.schema_version == PROVIDER_SCHEMA_VERSION && !state.target.is_empty())
+}
+
+fn activate_target(entry: &'static ProviderCatalogEntry) -> Result<()> {
+    let config_root = config_root()?;
+    fs::create_dir_all(&config_root).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create provider config directory '{}': {}",
+            config_root.display(),
+            error
+        ))
+    })?;
+    save_active_provider_state(&ActiveProviderState {
+        target: entry.target.into(),
+    })
+}
+
+fn clear_active_provider_state() -> Result<()> {
+    let path = active_provider_state_path()?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot remove active provider state '{}': {}",
+                path.display(),
+                error
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn save_active_provider_state(state: &ActiveProviderState) -> Result<()> {
+    let path = active_provider_state_path()?;
+    let content = format!("target={}\n", state.target);
+    io_safe::atomic_write(&path, &content)
+}
+
+fn load_active_provider_state() -> Result<Option<ActiveProviderState>> {
+    let path = active_provider_state_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let values = parse_key_value_file(&path)?;
+    let target = values.get("target").cloned().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Provider state file '{}' is missing target.",
+            path.display()
+        ))
+    })?;
+    Ok(Some(ActiveProviderState { target }))
+}
+
+fn save_bundle_manifest(bundle_root: &Path, manifest: &BundleManifest) -> Result<()> {
+    let path = bundle_manifest_path(bundle_root);
+    let mut content = String::new();
+    content.push_str(&format!("schema_version={}\n", manifest.schema_version));
+    content.push_str(&format!("target={}\n", manifest.target));
+    content.push_str(&format!("provider={}\n", manifest.provider));
+    content.push_str(&format!("model={}\n", manifest.model));
+    content.push_str(&format!("adapter={}\n", manifest.adapter));
+    content.push_str(&format!("runner_rel={}\n", manifest.runner_rel));
+    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
+        content.push_str(&format!("entry_rel={}\n", entry_rel));
+    }
+    content.push_str(&format!("checkpoint_rel={}\n", manifest.checkpoint_rel));
+    content.push_str(&format!("runner_sha256={}\n", manifest.runner_sha256));
+    io_safe::atomic_write(&path, &content)
+}
+
+fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
+    let values = parse_key_value_file(path)?;
+    let adapter = values
+        .get("adapter")
+        .cloned()
+        .or_else(|| infer_legacy_manifest_adapter(&values))
+        .ok_or_else(|| {
+            RedactError::Config(format!(
+                "Provider metadata '{}' is missing key 'adapter'.",
+                path.display()
+            ))
+        })?;
+    Ok(BundleManifest {
+        schema_version: parse_required_u32(&values, "schema_version", path)?,
+        target: parse_required_value(&values, "target", path)?,
+        provider: parse_required_value(&values, "provider", path)?,
+        model: parse_required_value(&values, "model", path)?,
+        adapter,
+        runner_rel: parse_required_value(&values, "runner_rel", path)?,
+        entry_rel: values.get("entry_rel").cloned(),
+        checkpoint_rel: parse_required_value(&values, "checkpoint_rel", path)?,
+        runner_sha256: parse_required_value(&values, "runner_sha256", path)?,
+    })
+}
+
+fn infer_legacy_manifest_adapter(values: &HashMap<String, String>) -> Option<String> {
+    let target = values.get("target")?;
+    find_catalog_entry_by_target(target).map(|entry| entry.adapter.manifest_name().to_string())
+}
+
+fn save_verified_state(bundle_root: &Path, state: &VerifiedState) -> Result<()> {
+    let path = verified_state_path(bundle_root);
+    let content = format!(
+        "schema_version={}\ntarget={}\nverified_unix_seconds={}\n",
+        state.schema_version, state.target, state.verified_unix_seconds
+    );
+    io_safe::atomic_write(&path, &content)
+}
+
+fn load_verified_state(path: &Path) -> Result<VerifiedState> {
+    let values = parse_key_value_file(path)?;
+    Ok(VerifiedState {
+        schema_version: parse_required_u32(&values, "schema_version", path)?,
+        target: parse_required_value(&values, "target", path)?,
+        verified_unix_seconds: parse_required_u64(&values, "verified_unix_seconds", path)?,
+    })
+}
+
+fn save_ollama_runtime_state(path: &Path, state: &OllamaRuntimeState) -> Result<()> {
+    let content = format!(
+        "base_url={}\nmodel_name={}\n",
+        state.base_url, state.model_name
+    );
+    io_safe::atomic_write(path, &content)
+}
+
+fn load_ollama_runtime_state(bundle_root: &Path) -> Result<OllamaRuntimeState> {
+    let path = bundle_root
+        .join(PROVIDER_RUNTIME_DIR)
+        .join(OLLAMA_RUNTIME_STATE_FILE);
+    let values = parse_key_value_file(&path)?;
+    Ok(OllamaRuntimeState {
+        base_url: parse_required_value(&values, "base_url", &path)?,
+        model_name: parse_required_value(&values, "model_name", &path)?,
+    })
+}
+
+fn parse_key_value_file(path: &Path) -> Result<HashMap<String, String>> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        RedactError::Config(format!("Cannot read '{}': {}", path.display(), error))
+    })?;
+    let mut values = HashMap::new();
+    for (line_index, raw_line) in content.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            RedactError::Config(format!(
+                "Invalid provider metadata line {} in '{}': {}",
+                line_index + 1,
+                path.display(),
+                raw_line
+            ))
+        })?;
+        values.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    Ok(values)
+}
+
+fn parse_required_value(
+    values: &HashMap<String, String>,
+    key: &str,
+    path: &Path,
+) -> Result<String> {
+    values.get(key).cloned().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Provider metadata '{}' is missing key '{}'.",
+            path.display(),
+            key
+        ))
+    })
+}
+
+fn parse_required_u32(values: &HashMap<String, String>, key: &str, path: &Path) -> Result<u32> {
+    let value = parse_required_value(values, key, path)?;
+    value.parse::<u32>().map_err(|_| {
+        RedactError::Config(format!(
+            "Provider metadata '{}' has invalid {} value '{}'.",
+            path.display(),
+            key,
+            value
+        ))
+    })
+}
+
+fn parse_required_u64(values: &HashMap<String, String>, key: &str, path: &Path) -> Result<u64> {
+    let value = parse_required_value(values, key, path)?;
+    value.parse::<u64>().map_err(|_| {
+        RedactError::Config(format!(
+            "Provider metadata '{}' has invalid {} value '{}'.",
+            path.display(),
+            key,
+            value
+        ))
+    })
+}
+
+fn bundle_manifest_path(bundle_root: &Path) -> PathBuf {
+    bundle_root.join(PROVIDER_BUNDLE_MANIFEST_FILE)
+}
+
+fn verified_state_path(bundle_root: &Path) -> PathBuf {
+    bundle_root.join(VERIFIED_PROVIDER_STATE_FILE)
+}
+
+fn active_provider_state_path() -> Result<PathBuf> {
+    Ok(config_root()?.join(ACTIVE_PROVIDER_STATE_FILE))
+}
+
+fn bundle_root_for_entry(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
+    Ok(providers_root()?.join(entry.provider).join(entry.model))
+}
+
+fn install_temp_bundle_path(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
+    let now = unix_timestamp_now()?;
+    Ok(providers_root()?.join(format!(
+        ".install-{}-{}-{}",
+        entry.provider, entry.model, now
+    )))
+}
+
+fn providers_root() -> Result<PathBuf> {
+    Ok(data_root()?.join(PROVIDER_BUNDLES_DIR))
+}
+
+fn config_root() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var(REDACTED_CONFIG_HOME_OVERRIDE) {
+        return Ok(PathBuf::from(path));
+    }
+    if cfg!(windows) {
+        if let Ok(path) = std::env::var("APPDATA") {
+            return Ok(PathBuf::from(path).join("redacted"));
+        }
+    }
+    if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(path).join("redacted"));
+    }
+    Ok(home_dir()?.join(".config").join("redacted"))
+}
+
+fn data_root() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var(REDACTED_DATA_HOME_OVERRIDE) {
+        return Ok(PathBuf::from(path));
+    }
+    if cfg!(windows) {
+        if let Ok(path) = std::env::var("APPDATA") {
+            return Ok(PathBuf::from(path).join("redacted"));
+        }
+    }
+    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
+        return Ok(PathBuf::from(path).join("redacted"));
+    }
+    Ok(home_dir()?.join(".local").join("share").join("redacted"))
+}
+
+fn home_dir() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("HOME") {
+        return Ok(PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("USERPROFILE") {
+        return Ok(PathBuf::from(path));
+    }
+    Err(RedactError::Config(
+        "Cannot determine home directory for provider state.".into(),
+    ))
+}
+
+fn resolve_catalog_entry(selector: &str) -> Result<&'static ProviderCatalogEntry> {
+    if selector.contains('/') {
+        return find_catalog_entry_by_target(selector).ok_or_else(|| {
+            RedactError::Usage(format!(
+                "Unknown provider target '{}'.\n  redacted provider list",
+                selector
+            ))
+        });
+    }
+    let mut matches = PROVIDER_CATALOG
+        .iter()
+        .filter(|entry| entry.aliases.contains(&selector));
+    let entry = matches.next().ok_or_else(|| {
+        RedactError::Usage(format!(
+            "Unknown provider alias '{}'.\n  redacted provider list",
+            selector
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(RedactError::Usage(format!(
+            "Provider alias '{}' is ambiguous.\n  redacted provider list",
+            selector
+        )));
+    }
+    Ok(entry)
+}
+
+fn find_catalog_entry_by_target(target: &str) -> Option<&'static ProviderCatalogEntry> {
+    PROVIDER_CATALOG.iter().find(|entry| entry.target == target)
+}
+
+fn default_venv_python_rel() -> &'static str {
+    if cfg!(windows) {
+        "venv/Scripts/python.exe"
+    } else {
+        "venv/bin/python"
+    }
+}
+
+fn create_virtualenv(venv_path: &Path) -> Result<()> {
+    let python = system_python_command();
+    let output = Command::new(&python)
+        .arg("-m")
+        .arg("venv")
+        .arg(venv_path)
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!("Failed to start '{} -m venv': {}", python, error))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Virtualenv creation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn install_package_from_archive(bundle_root: &Path, archive_path: &Path) -> Result<()> {
+    let python = bundle_root.join(default_venv_python_rel());
+    let output = Command::new(&python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("--disable-pip-version-check")
+        .arg("--no-input")
+        .arg(archive_path)
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to start pip install for '{}': {}",
+                archive_path.display(),
+                error
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Provider package installation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn write_openai_runner_script(path: &Path) -> Result<()> {
+    io_safe::atomic_write(path, OPENAI_RUNNER_SCRIPT)
+}
+
+fn write_ollama_runner_script(path: &Path) -> Result<()> {
+    io_safe::atomic_write(path, OLLAMA_RUNNER_SCRIPT)?;
+    make_executable_if_supported(path)
+}
+
+fn system_python_command() -> String {
+    std::env::var(REDACTED_PROVIDER_PYTHON_OVERRIDE).unwrap_or_else(|_| "python3".into())
+}
+
+fn ollama_base_url() -> String {
+    std::env::var(REDACTED_OLLAMA_BASE_URL_OVERRIDE)
+        .unwrap_or_else(|_| DEFAULT_OLLAMA_BASE_URL.into())
+}
+
+fn make_executable_if_supported(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path)
+            .map_err(|error| {
+                RedactError::Config(format!(
+                    "Cannot inspect runner script '{}': {}",
+                    path.display(),
+                    error
+                ))
+            })?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot mark runner script '{}' executable: {}",
+                path.display(),
+                error
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn download_file_via_python(url: &str, destination: &Path) -> Result<()> {
+    let python = system_python_command();
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot create download directory '{}': {}",
+                parent.display(),
+                error
+            ))
+        })?;
+    }
+    let output = Command::new(&python)
+        .arg("-c")
+        .arg(
+            r#"import pathlib, shutil, sys, urllib.request
+url = sys.argv[1]
+dest = pathlib.Path(sys.argv[2])
+dest.parent.mkdir(parents=True, exist_ok=True)
+with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as handle:
+    shutil.copyfileobj(response, handle, length=1024 * 1024)
+"#,
+        )
+        .arg(url)
+        .arg(destination)
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to start download helper '{}': {}",
+                python, error
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Failed to download '{}': {}",
+            url,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn verify_ollama_runtime_bundle(bundle_root: &Path) -> Result<()> {
+    let state = load_ollama_runtime_state(bundle_root)?;
+    ensure_ollama_model_available(&state.base_url, &state.model_name, false)
+}
+
+fn ensure_ollama_model_available(
+    base_url: &str,
+    model_name: &str,
+    pull_if_missing: bool,
+) -> Result<()> {
+    if ollama_model_available(base_url, model_name)? {
+        return Ok(());
+    }
+    if !pull_if_missing {
+        return Err(RedactError::Usage(format!(
+            "Ollama model '{}' is not available at {}.\nStart Ollama locally and install it, then run:\n  redacted provider enable ollama",
+            model_name, base_url
+        )));
+    }
+    pull_ollama_model(base_url, model_name)?;
+    if ollama_model_available(base_url, model_name)? {
+        return Ok(());
+    }
+    Err(RedactError::Config(format!(
+        "Ollama model '{}' was not available after pull at {}.",
+        model_name, base_url
+    )))
+}
+
+fn ollama_model_available(base_url: &str, model_name: &str) -> Result<bool> {
+    let tags_url = join_url_path(base_url, "tags");
+    let response_body = http_request_json("GET", &tags_url, None)?;
+    let value = JsonParser::new(&response_body).parse().map_err(|message| {
+        RedactError::Config(format!("Invalid Ollama tags response: {}", message))
+    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| RedactError::Config("Ollama tags response must be a JSON object.".into()))?;
+    let models = object
+        .get("models")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| RedactError::Config("Ollama tags response is missing models.".into()))?;
+    Ok(models
+        .iter()
+        .any(|model| ollama_model_matches(model, model_name)))
+}
+
+fn ollama_model_matches(value: &JsonValue, model_name: &str) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let candidates = ["name", "model"]
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(JsonValue::as_str));
+    for candidate in candidates {
+        if candidate == model_name || candidate.starts_with(&format!("{}:", model_name)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn pull_ollama_model(base_url: &str, model_name: &str) -> Result<()> {
+    let pull_url = join_url_path(base_url, "pull");
+    let body = format!(
+        "{{\"model\":\"{}\",\"stream\":false}}",
+        json_escape(model_name)
+    );
+    let _ = http_request_json("POST", &pull_url, Some(&body))?;
+    Ok(())
+}
+
+fn join_url_path(base_url: &str, suffix: &str) -> String {
+    format!("{}/{}", base_url.trim_end_matches('/'), suffix)
+}
+
+fn http_request_json(method: &str, url: &str, body: Option<&str>) -> Result<String> {
+    let parsed = parse_http_url(url)?;
+    let mut stream = TcpStream::connect((parsed.host.as_str(), parsed.port))
+        .map_err(|error| RedactError::Config(format!("Cannot connect to '{}': {}", url, error)))?;
+    let timeout = Duration::from_secs(HTTP_TIMEOUT_SECONDS);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let request_body = body.unwrap_or("");
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n",
+        method = method,
+        path = parsed.path,
+        host = parsed.host
+    );
+    if body.is_some() {
+        request.push_str("Content-Type: application/json\r\n");
+        request.push_str(&format!("Content-Length: {}\r\n", request_body.len()));
+    }
+    request.push_str("\r\n");
+    request.push_str(request_body);
+    stream.write_all(request.as_bytes()).map_err(|error| {
+        RedactError::Config(format!(
+            "Failed to write HTTP request to '{}': {}",
+            url, error
+        ))
+    })?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|error| {
+        RedactError::Config(format!(
+            "Failed to read HTTP response from '{}': {}",
+            url, error
+        ))
+    })?;
+    let (head, body_text) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| RedactError::Config(format!("Malformed HTTP response from '{}'.", url)))?;
+    let mut lines = head.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| RedactError::Config(format!("Missing HTTP status line from '{}'.", url)))?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| RedactError::Config(format!("Malformed HTTP status from '{}'.", url)))?
+        .parse::<u16>()
+        .map_err(|_| RedactError::Config(format!("Malformed HTTP status from '{}'.", url)))?;
+    if !(200..300).contains(&status) {
+        return Err(RedactError::Config(format!(
+            "HTTP request to '{}' failed with status {}.",
+            url, status
+        )));
+    }
+    Ok(body_text.to_string())
+}
+
+#[derive(Debug)]
+struct ParsedHttpUrl {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+fn parse_http_url(url: &str) -> Result<ParsedHttpUrl> {
+    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
+        RedactError::Config(format!(
+            "Only local http:// Ollama URLs are supported, got '{}'.",
+            url
+        ))
+    })?;
+    let (host_port, path) = match without_scheme.find('/') {
+        Some(index) => (&without_scheme[..index], &without_scheme[index..]),
+        None => (without_scheme, "/"),
+    };
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((host, port_text)) if !host.is_empty() => (
+            host.to_string(),
+            port_text.parse::<u16>().map_err(|_| {
+                RedactError::Config(format!("Invalid port in Ollama URL '{}'.", url))
+            })?,
+        ),
+        _ => (host_port.to_string(), 80),
+    };
+    if host.is_empty() {
+        return Err(RedactError::Config(format!(
+            "Invalid host in Ollama URL '{}'.",
+            url
+        )));
+    }
+    Ok(ParsedHttpUrl {
+        host,
+        port,
+        path: path.to_string(),
+    })
+}
+
+fn unix_timestamp_now() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| RedactError::Config(format!("System time error: {}", error)))?
+        .as_secs())
+}
+
+fn yes_or_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn json_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for character in input.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                escaped.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
+fn parse_provider_response(line: &str) -> Result<ProviderResponse> {
+    let value = JsonParser::new(line).parse().map_err(|message| {
+        RedactError::Detection(format!("Invalid provider response JSON: {}", message))
+    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| RedactError::Detection("Provider response must be a JSON object.".into()))?;
+    let schema_version = object
+        .get("schema_version")
+        .and_then(JsonValue::as_u32)
+        .ok_or_else(|| {
+            RedactError::Detection("Provider response is missing schema_version.".into())
+        })?;
+    let request_id = object
+        .get("request_id")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| RedactError::Detection("Provider response is missing request_id.".into()))?
+        .to_string();
+    let target = object
+        .get("target")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| RedactError::Detection("Provider response is missing target.".into()))?
+        .to_string();
+    let error = object
+        .get("error")
+        .and_then(JsonValue::as_str)
+        .map(ToString::to_string);
+    let spans = object
+        .get("spans")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| RedactError::Detection("Provider response is missing spans.".into()))?
+        .iter()
+        .map(parse_provider_span)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ProviderResponse {
+        schema_version,
+        request_id,
+        target,
+        spans,
+        error,
+    })
+}
+
+fn parse_provider_span(value: &JsonValue) -> Result<ProviderSpan> {
+    let object = value.as_object().ok_or_else(|| {
+        RedactError::Detection("Provider span entry must be a JSON object.".into())
+    })?;
+    let label = object
+        .get("label")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| RedactError::Detection("Provider span is missing label.".into()))?
+        .to_string();
+    let start = object
+        .get("start")
+        .and_then(JsonValue::as_usize)
+        .ok_or_else(|| RedactError::Detection("Provider span is missing start.".into()))?;
+    let end = object
+        .get("end")
+        .and_then(JsonValue::as_usize)
+        .ok_or_else(|| RedactError::Detection("Provider span is missing end.".into()))?;
+    Ok(ProviderSpan { label, start, end })
+}
+
+#[derive(Debug, Clone)]
+enum JsonValue {
+    Object(HashMap<String, JsonValue>),
+    Array(Vec<JsonValue>),
+    String(String),
+    Number(i64),
+    Bool,
+    Null,
+}
+
+impl JsonValue {
+    fn as_object(&self) -> Option<&HashMap<String, JsonValue>> {
+        match self {
+            Self::Object(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&Vec<JsonValue>> {
+        match self {
+            Self::Array(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_u32(&self) -> Option<u32> {
+        match self {
+            Self::Number(value) => u32::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+
+    fn as_usize(&self) -> Option<usize> {
+        match self {
+            Self::Number(value) => usize::try_from(*value).ok(),
+            _ => None,
+        }
+    }
+}
+
+struct JsonParser<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            bytes: input.as_bytes(),
+            position: 0,
+        }
+    }
+
+    fn parse(mut self) -> std::result::Result<JsonValue, String> {
+        let value = self.parse_value()?;
+        self.skip_whitespace();
+        if self.position != self.bytes.len() {
+            return Err("trailing characters after JSON value".into());
+        }
+        Ok(value)
+    }
+
+    fn parse_value(&mut self) -> std::result::Result<JsonValue, String> {
+        self.skip_whitespace();
+        match self.peek_byte() {
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b'"') => self.parse_string().map(JsonValue::String),
+            Some(b'-') | Some(b'0'..=b'9') => self.parse_number().map(JsonValue::Number),
+            Some(b't') => {
+                self.expect_bytes(b"true")?;
+                Ok(JsonValue::Bool)
+            }
+            Some(b'f') => {
+                self.expect_bytes(b"false")?;
+                Ok(JsonValue::Bool)
+            }
+            Some(b'n') => {
+                self.expect_bytes(b"null")?;
+                Ok(JsonValue::Null)
+            }
+            Some(other) => Err(format!("unexpected byte '{}'", other as char)),
+            None => Err("unexpected end of input".into()),
+        }
+    }
+
+    fn parse_object(&mut self) -> std::result::Result<JsonValue, String> {
+        self.expect_byte(b'{')?;
+        let mut object = HashMap::new();
+        self.skip_whitespace();
+        if self.consume_if(b'}') {
+            return Ok(JsonValue::Object(object));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.expect_byte(b':')?;
+            let value = self.parse_value()?;
+            object.insert(key, value);
+            self.skip_whitespace();
+            if self.consume_if(b'}') {
+                break;
+            }
+            self.expect_byte(b',')?;
+        }
+        Ok(JsonValue::Object(object))
+    }
+
+    fn parse_array(&mut self) -> std::result::Result<JsonValue, String> {
+        self.expect_byte(b'[')?;
+        let mut values = Vec::new();
+        self.skip_whitespace();
+        if self.consume_if(b']') {
+            return Ok(JsonValue::Array(values));
+        }
+        loop {
+            values.push(self.parse_value()?);
+            self.skip_whitespace();
+            if self.consume_if(b']') {
+                break;
+            }
+            self.expect_byte(b',')?;
+        }
+        Ok(JsonValue::Array(values))
+    }
+
+    fn parse_string(&mut self) -> std::result::Result<String, String> {
+        self.expect_byte(b'"')?;
+        let mut output = String::new();
+        while let Some(byte) = self.next_byte() {
+            match byte {
+                b'"' => return Ok(output),
+                b'\\' => {
+                    let escaped = self
+                        .next_byte()
+                        .ok_or_else(|| "unterminated escape sequence".to_string())?;
+                    match escaped {
+                        b'"' => output.push('"'),
+                        b'\\' => output.push('\\'),
+                        b'/' => output.push('/'),
+                        b'b' => output.push('\u{0008}'),
+                        b'f' => output.push('\u{000C}'),
+                        b'n' => output.push('\n'),
+                        b'r' => output.push('\r'),
+                        b't' => output.push('\t'),
+                        b'u' => {
+                            let code_point = self.parse_unicode_escape()?;
+                            let character = char::from_u32(code_point)
+                                .ok_or_else(|| "invalid unicode escape".to_string())?;
+                            output.push(character);
+                        }
+                        other => {
+                            return Err(format!("unsupported escape byte '{}'", other as char));
+                        }
+                    }
+                }
+                other => output.push(other as char),
+            }
+        }
+        Err("unterminated string".into())
+    }
+
+    fn parse_unicode_escape(&mut self) -> std::result::Result<u32, String> {
+        let mut value = 0u32;
+        for _ in 0..4 {
+            let byte = self
+                .next_byte()
+                .ok_or_else(|| "unterminated unicode escape".to_string())?;
+            value <<= 4;
+            value |= match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                b'A'..=b'F' => u32::from(byte - b'A') + 10,
+                other => {
+                    return Err(format!("invalid unicode escape byte '{}'", other as char));
+                }
+            };
+        }
+        Ok(value)
+    }
+
+    fn parse_number(&mut self) -> std::result::Result<i64, String> {
+        let start = self.position;
+        if self.peek_byte() == Some(b'-') {
+            self.position += 1;
+        }
+        while matches!(self.peek_byte(), Some(b'0'..=b'9')) {
+            self.position += 1;
+        }
+        let text = std::str::from_utf8(&self.bytes[start..self.position])
+            .map_err(|_| "invalid number".to_string())?;
+        text.parse::<i64>()
+            .map_err(|_| format!("invalid number '{}'", text))
+    }
+
+    fn expect_bytes(&mut self, expected: &[u8]) -> std::result::Result<(), String> {
+        for byte in expected {
+            self.expect_byte(*byte)?;
+        }
+        Ok(())
+    }
+
+    fn expect_byte(&mut self, expected: u8) -> std::result::Result<(), String> {
+        let byte = self
+            .next_byte()
+            .ok_or_else(|| format!("expected byte '{}'", expected as char))?;
+        if byte != expected {
+            return Err(format!(
+                "expected byte '{}', got '{}'",
+                expected as char, byte as char
+            ));
+        }
+        Ok(())
+    }
+
+    fn consume_if(&mut self, expected: u8) -> bool {
+        if self.peek_byte() == Some(expected) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek_byte(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.position += 1;
+        }
+    }
+
+    fn peek_byte(&self) -> Option<u8> {
+        self.bytes.get(self.position).copied()
+    }
+
+    fn next_byte(&mut self) -> Option<u8> {
+        let byte = self.peek_byte()?;
+        self.position += 1;
+        Some(byte)
+    }
+}
+
+fn sha256_hex_of_path(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot open '{}' for SHA-256: {}",
+            path.display(),
+            error
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot read '{}' for SHA-256: {}",
+                path.display(),
+                error
+            ))
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(hasher.finalize_hex())
+}
+
+fn sha256_hex_of_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize_hex()
+}
+
+struct Sha256 {
+    state: [u32; 8],
+    length_bits: u64,
+    buffer: [u8; 64],
+    buffer_len: usize,
+}
+
+impl Sha256 {
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            length_bits: 0,
+            buffer: [0; 64],
+            buffer_len: 0,
+        }
+    }
+
+    fn update(&mut self, mut input: &[u8]) {
+        self.length_bits = self.length_bits.wrapping_add((input.len() as u64) * 8);
+
+        if self.buffer_len > 0 {
+            let take = std::cmp::min(64 - self.buffer_len, input.len());
+            self.buffer[self.buffer_len..self.buffer_len + take].copy_from_slice(&input[..take]);
+            self.buffer_len += take;
+            input = &input[take..];
+            if self.buffer_len == 64 {
+                Self::process_block(&mut self.state, &self.buffer);
+                self.buffer_len = 0;
+            }
+        }
+
+        while input.len() >= 64 {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&input[..64]);
+            Self::process_block(&mut self.state, &block);
+            input = &input[64..];
+        }
+
+        if !input.is_empty() {
+            self.buffer[..input.len()].copy_from_slice(input);
+            self.buffer_len = input.len();
+        }
+    }
+
+    fn finalize_hex(mut self) -> String {
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+
+        if self.buffer_len > 56 {
+            for byte in &mut self.buffer[self.buffer_len..] {
+                *byte = 0;
+            }
+            Self::process_block(&mut self.state, &self.buffer);
+            self.buffer = [0; 64];
+            self.buffer_len = 0;
+        }
+
+        for byte in &mut self.buffer[self.buffer_len..56] {
+            *byte = 0;
+        }
+        self.buffer[56..64].copy_from_slice(&self.length_bits.to_be_bytes());
+        Self::process_block(&mut self.state, &self.buffer);
+
+        let mut output = String::with_capacity(64);
+        for word in self.state {
+            output.push_str(&format!("{:08x}", word));
+        }
+        output
+    }
+
+    fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
+        const ROUND_CONSTANTS: [u32; 64] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2,
+        ];
+
+        let mut schedule = [0u32; 64];
+        for (index, slot) in schedule.iter_mut().enumerate().take(16) {
+            let offset = index * 4;
+            *slot = u32::from_be_bytes([
+                block[offset],
+                block[offset + 1],
+                block[offset + 2],
+                block[offset + 3],
+            ]);
+        }
+        for index in 16..64 {
+            let s0 = schedule[index - 15].rotate_right(7)
+                ^ schedule[index - 15].rotate_right(18)
+                ^ (schedule[index - 15] >> 3);
+            let s1 = schedule[index - 2].rotate_right(17)
+                ^ schedule[index - 2].rotate_right(19)
+                ^ (schedule[index - 2] >> 10);
+            schedule[index] = schedule[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(schedule[index - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = state[0];
+        let mut b = state[1];
+        let mut c = state[2];
+        let mut d = state[3];
+        let mut e = state[4];
+        let mut f = state[5];
+        let mut g = state[6];
+        let mut h = state[7];
+
+        for index in 0..64 {
+            let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choose = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(sum1)
+                .wrapping_add(choose)
+                .wrapping_add(ROUND_CONSTANTS[index])
+                .wrapping_add(schedule[index]);
+            let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = sum0.wrapping_add(majority);
+
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        state[0] = state[0].wrapping_add(a);
+        state[1] = state[1].wrapping_add(b);
+        state[2] = state[2].wrapping_add(c);
+        state[3] = state[3].wrapping_add(d);
+        state[4] = state[4].wrapping_add(e);
+        state[5] = state[5].wrapping_add(f);
+        state[6] = state[6].wrapping_add(g);
+        state[7] = state[7].wrapping_add(h);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("redacted_provider_test_{}", name));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn resolve_openai_alias_to_default_target() {
+        let entry = resolve_catalog_entry("openai").unwrap();
+        assert_eq!(entry.target, OPENAI_PRIVACY_TARGET);
+    }
+
+    #[test]
+    fn resolve_ollama_alias_to_default_target() {
+        let entry = resolve_catalog_entry("ollama").unwrap();
+        assert_eq!(entry.target, OLLAMA_PRIVACY_TARGET);
+    }
+
+    #[test]
+    fn sha256_matches_known_vector() {
+        assert_eq!(
+            sha256_hex_of_bytes(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn json_parser_handles_provider_response() {
+        let response = parse_provider_response(
+            r#"{"schema_version":1,"request_id":"req-1","target":"openai/privacy-filter-v1","spans":[{"label":"private_email","start":1,"end":3}]}"#,
+        )
+        .unwrap();
+        assert_eq!(response.request_id, "req-1");
+        assert_eq!(response.spans.len(), 1);
+        assert_eq!(response.spans[0].label, "private_email");
+    }
+
+    #[test]
+    fn bundle_manifest_round_trip() {
+        let root = temp_path("manifest");
+        let manifest = BundleManifest {
+            schema_version: 1,
+            target: OPENAI_PRIVACY_TARGET.into(),
+            provider: "openai".into(),
+            model: "privacy-filter-v1".into(),
+            adapter: ProviderAdapterKind::OpenAiOpfLocal.manifest_name().into(),
+            runner_rel: "venv/bin/python".into(),
+            entry_rel: Some("runner/openai_privacy_runner.py".into()),
+            checkpoint_rel: "model".into(),
+            runner_sha256: "abc123".into(),
+        };
+        save_bundle_manifest(&root, &manifest).unwrap();
+        let loaded = load_bundle_manifest(&bundle_manifest_path(&root)).unwrap();
+        assert_eq!(loaded.target, manifest.target);
+        assert_eq!(loaded.runner_sha256, manifest.runner_sha256);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_manifest_without_adapter_still_loads() {
+        let root = temp_path("legacy_manifest");
+        let path = bundle_manifest_path(&root);
+        let content = "\
+schema_version=1
+target=openai/privacy-filter-v1
+provider=openai
+model=privacy-filter-v1
+runner_rel=runner/openai_privacy_runner.py
+entry_rel=venv/bin/python
+checkpoint_rel=model
+runner_sha256=abc123
+";
+        io_safe::atomic_write(&path, content).unwrap();
+
+        let loaded = load_bundle_manifest(&path).unwrap();
+        assert_eq!(
+            loaded.adapter,
+            ProviderAdapterKind::OpenAiOpfLocal.manifest_name()
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ready_bundle_requires_verified_state() {
+        let root = temp_path("ready_bundle");
+        let manifest = BundleManifest {
+            schema_version: 1,
+            target: OPENAI_PRIVACY_TARGET.into(),
+            provider: "openai".into(),
+            model: "privacy-filter-v1".into(),
+            adapter: ProviderAdapterKind::OpenAiOpfLocal.manifest_name().into(),
+            runner_rel: "bin/fake-runner".into(),
+            entry_rel: None,
+            checkpoint_rel: "model".into(),
+            runner_sha256: "abc".into(),
+        };
+        save_bundle_manifest(&root, &manifest).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::write(root.join("bin").join("fake-runner"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(
+            root.join("bin").join("fake-runner"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("model")).unwrap();
+        let result = ensure_ready_bundle(&OPENAI_PROVIDER_ENTRY, &root);
+        assert!(result.is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repair_bundle_runtime_paths_rewrites_moved_virtualenv_references() {
+        let root = temp_path("repair_bundle_runtime_paths");
+        let bundle_root = root
+            .join("providers")
+            .join("openai")
+            .join("privacy-filter-v1");
+        let scripts_dir = bundle_root.join("venv").join("bin");
+        let dist_info_dir = bundle_root
+            .join("venv")
+            .join("lib")
+            .join("python3.12")
+            .join("site-packages")
+            .join("opf-0.1.0.dist-info");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        fs::create_dir_all(&dist_info_dir).unwrap();
+
+        let embedded_root = root
+            .join("providers")
+            .join(".install-openai-privacy-filter-v1-12345");
+        fs::write(
+            bundle_root.join("venv").join("pyvenv.cfg"),
+            format!(
+                "command = /opt/python/bin/python3.12 -m venv {}/venv\n",
+                embedded_root.display()
+            ),
+        )
+        .unwrap();
+        let opf_path = scripts_dir.join("opf");
+        fs::write(
+            &opf_path,
+            format!(
+                "#!{}/venv/bin/python\nprint('opf')\n",
+                embedded_root.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&opf_path, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            dist_info_dir.join("direct_url.json"),
+            format!(
+                "{{\"url\":\"file://{}/downloads/opf-source.tar.gz\"}}\n",
+                embedded_root.display()
+            ),
+        )
+        .unwrap();
+
+        repair_bundle_runtime_paths(&bundle_root).unwrap();
+
+        let rewritten_cfg =
+            fs::read_to_string(bundle_root.join("venv").join("pyvenv.cfg")).unwrap();
+        assert!(rewritten_cfg.contains(&bundle_root.to_string_lossy().into_owned()));
+        assert!(!rewritten_cfg.contains(&embedded_root.to_string_lossy().into_owned()));
+
+        let rewritten_opf = fs::read_to_string(&opf_path).unwrap();
+        assert!(rewritten_opf.contains(&bundle_root.to_string_lossy().into_owned()));
+        assert!(!rewritten_opf.contains(&embedded_root.to_string_lossy().into_owned()));
+
+        let mode = fs::metadata(&opf_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+
+        let rewritten_direct_url =
+            fs::read_to_string(dist_info_dir.join("direct_url.json")).unwrap();
+        assert!(rewritten_direct_url.contains(&bundle_root.to_string_lossy().into_owned()));
+        assert!(!rewritten_direct_url.contains(&embedded_root.to_string_lossy().into_owned()));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

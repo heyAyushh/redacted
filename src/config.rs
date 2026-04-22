@@ -33,6 +33,7 @@ pub struct Config {
     pub include_hidden: bool,
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
+    pub privacy_filter: bool,
 }
 
 impl Config {
@@ -63,6 +64,7 @@ impl Config {
             include_hidden: cli.include_hidden,
             follow_symlinks: cli.follow_symlinks,
             threads: cli.threads,
+            privacy_filter: cli.privacy_filter,
         };
 
         if let Some(ref config_path) = cli.config {
@@ -294,14 +296,16 @@ my_key = "sk_[a-z]+"
         )
         .unwrap();
 
-        let mut cli = CliArgs::default();
-        cli.config = Some(config_path.to_str().unwrap().to_string());
+        let mut cli = CliArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            follow_symlinks: false,
+            binary: BinaryMode::Skip,
+            max_file_size: 25 * 1024 * 1024,
+            ..CliArgs::default()
+        };
         // Explicitly set --no-follow-symlinks and --binary skip
-        cli.follow_symlinks = false;
         cli.explicit_flags.insert("follow_symlinks".into());
-        cli.binary = BinaryMode::Skip;
         cli.explicit_flags.insert("binary".into());
-        cli.max_file_size = 25 * 1024 * 1024;
         cli.explicit_flags.insert("max_file_size".into());
 
         let config = Config::from_cli(&cli).unwrap();
@@ -331,8 +335,10 @@ my_key = "sk_[a-z]+"
         let config_path = dir.join("test.toml");
         std::fs::write(&config_path, "follow_symlinks = true\n").unwrap();
 
-        let mut cli = CliArgs::default();
-        cli.config = Some(config_path.to_str().unwrap().to_string());
+        let cli = CliArgs {
+            config: Some(config_path.to_str().unwrap().to_string()),
+            ..CliArgs::default()
+        };
         // No explicit flag set — TOML should apply
         let config = Config::from_cli(&cli).unwrap();
         assert!(
