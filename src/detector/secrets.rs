@@ -41,6 +41,10 @@ fn is_high_entropy_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'/'
 }
 
+fn is_assignment_keyword_terminator(c: u8) -> bool {
+    c.is_ascii_whitespace() || c == b'=' || c == b':'
+}
+
 fn shannon_entropy(sample: &[u8]) -> f64 {
     let mut counts = [0usize; 256];
     for &b in sample {
@@ -659,6 +663,17 @@ impl Detector for GenericSecretAssignDetector {
 
 pub struct HighEntropyKeywordDetector;
 
+const HIGH_ENTROPY_KEYWORDS: [&str; 8] = [
+    "client_secret",
+    "access_key",
+    "auth_token",
+    "session_key",
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+];
+
 impl Detector for HighEntropyKeywordDetector {
     fn name(&self) -> &'static str {
         "HIGH_ENTROPY_SECRET"
@@ -670,39 +685,39 @@ impl Detector for HighEntropyKeywordDetector {
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let keywords = [
-            "token",
-            "secret",
-            "apikey",
-            "api_key",
-            "access_key",
-            "auth_token",
-            "client_secret",
-            "session_key",
-        ];
 
         for line in text.lines() {
             let lower = line.to_ascii_lowercase();
-            let mut matched = false;
-            for kw in &keywords {
-                if matched {
-                    break;
-                }
+            let mut line_findings = Vec::new();
+            for kw in &HIGH_ENTROPY_KEYWORDS {
                 let mut search_from = 0;
                 while search_from < lower.len() {
                     let Some(rel_pos) = lower[search_from..].find(kw) else {
                         break;
                     };
                     let kw_pos = search_from + rel_pos;
+
+                    let keyword_end = kw_pos + kw.len();
+                    if keyword_end < lower.len()
+                        && !is_assignment_keyword_terminator(lower.as_bytes()[keyword_end])
+                    {
+                        search_from = keyword_end;
+                        continue;
+                    }
+
                     if let Some(finding) = scan_entropy_assignment(text, line, kw_pos, self.name())
                     {
-                        findings.push(finding);
-                        matched = true;
-                        break;
+                        if !line_findings.iter().any(|existing: &Finding| {
+                            existing.end == finding.end && existing.start <= finding.start
+                        }) {
+                            line_findings.push(finding);
+                        }
                     }
-                    search_from = kw_pos + kw.len();
+                    search_from = keyword_end;
                 }
             }
+            line_findings.sort_by_key(|finding| finding.start);
+            findings.extend(line_findings);
         }
 
         findings
@@ -1001,6 +1016,23 @@ mod tests {
         let findings = d.detect(text);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].detector_name, "HIGH_ENTROPY_SECRET");
+        assert_eq!(&text[findings[0].start..findings[0].end], text);
+    }
+
+    #[test]
+    fn detect_multiple_high_entropy_secrets_on_same_line() {
+        let d = HighEntropyKeywordDetector;
+        let text = "token=Qx7rL9mN2pV4sT8wY1bC6dF secret=Yz8kLp3Vn6Qr1Tm9Sa4Bc7De";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(
+            &text[findings[0].start..findings[0].end],
+            "token=Qx7rL9mN2pV4sT8wY1bC6dF"
+        );
+        assert_eq!(
+            &text[findings[1].start..findings[1].end],
+            "secret=Yz8kLp3Vn6Qr1Tm9Sa4Bc7De"
+        );
     }
 
     #[test]

@@ -56,17 +56,17 @@ fn decide_finding(
         return FindingAction::Ignore;
     }
 
+    let matched = &text[finding.start..finding.end];
+
+    if except_literals.iter().any(|literal| literal == matched) {
+        return FindingAction::Ignore;
+    }
+
     if retain_detectors
         .iter()
         .any(|name| name == finding.detector_name)
     {
         return FindingAction::Retain;
-    }
-
-    let matched = &text[finding.start..finding.end];
-
-    if except_literals.iter().any(|literal| literal == matched) {
-        return FindingAction::Ignore;
     }
 
     if retain_literals.iter().any(|literal| literal == matched) {
@@ -142,6 +142,20 @@ mod tests {
             &[],
             &["EMAIL".into()],
             &[],
+            &[],
+        );
+        assert_eq!(decisions[0].action, FindingAction::Ignore);
+    }
+
+    #[test]
+    fn except_literal_overrides_detector_retain() {
+        let decisions = decide_findings(
+            "email: noreply@example.com",
+            vec![finding("EMAIL", 7, 26)],
+            &["EMAIL".into()],
+            &[],
+            &[],
+            &["noreply@example.com".into()],
             &[],
         );
         assert_eq!(decisions[0].action, FindingAction::Ignore);
