@@ -165,9 +165,15 @@ fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
                 // exposed while avoiding detector-name drift for contained matches.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
-                let last_contains_f = last.start <= f.start && last.end >= f.end;
-                let prefer_new_metadata =
-                    f.confidence > last.confidence || (f.confidence == last.confidence && last_contains_f);
+                let last_strictly_contains_f = last.start <= f.start
+                    && last.end >= f.end
+                    && (last.start < f.start || last.end > f.end);
+                let contained_secret_overlap =
+                    last_strictly_contains_f && last.category == "secret" && f.category == "secret";
+                let prefer_new_metadata = f.confidence > last.confidence
+                    || (f.confidence == last.confidence
+                        && ((f.end - f.start) > (last.end - last.start)
+                            || contained_secret_overlap));
                 if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
@@ -301,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_overlapping_equal_confidence_partial_overlap_keeps_existing_detector_name() {
+    fn merge_overlapping_equal_confidence_partial_overlap_keeps_longer_detector_name() {
         let findings = vec![
             Finding {
                 detector_name: "FIRST",
@@ -315,16 +321,16 @@ mod tests {
                 detector_name: "SECOND",
                 category: "secret",
                 start: 8,
-                end: 20,
+                end: 24,
                 confidence: Confidence::Medium,
-                matched_len: 12,
+                matched_len: 16,
             },
         ];
         let merged = merge_overlapping(findings);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].detector_name, "FIRST");
+        assert_eq!(merged[0].detector_name, "SECOND");
         assert_eq!(merged[0].start, 0);
-        assert_eq!(merged[0].end, 20);
+        assert_eq!(merged[0].end, 24);
     }
 
     #[test]
