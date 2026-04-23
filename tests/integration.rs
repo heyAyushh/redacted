@@ -131,6 +131,27 @@ fn provider_env(name: &str) -> (PathBuf, PathBuf, Vec<(String, String)>) {
     (config_root, data_root, envs)
 }
 
+#[cfg(unix)]
+fn add_fake_pdftotext_to_env(
+    envs: &mut Vec<(String, String)>,
+    root: &std::path::Path,
+) -> std::io::Result<()> {
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir)?;
+    let tool_path = bin_dir.join("pdftotext");
+    fs::write(
+        &tool_path,
+        "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('pdftotext 1.0\\n')\n",
+    )?;
+    fs::set_permissions(&tool_path, fs::Permissions::from_mode(0o755))?;
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    envs.push((
+        "PATH".to_string(),
+        format!("{}:{}", bin_dir.to_string_lossy(), current_path),
+    ));
+    Ok(())
+}
+
 struct FakeOllamaServer {
     base_url: String,
     address: String,
@@ -380,6 +401,63 @@ verified_unix_seconds=1\n",
 }
 
 #[cfg(unix)]
+fn install_fake_document_bundle(
+    config_root: &std::path::Path,
+    data_root: &std::path::Path,
+    runner_contents: &str,
+    activate: bool,
+) {
+    let bundle_root = data_root
+        .join("document-adapters")
+        .join("pdf-inspector")
+        .join("local-v1");
+    fs::create_dir_all(bundle_root.join("runner")).unwrap();
+    let runner_path = bundle_root.join("runner").join("fake_document_runner.py");
+    fs::write(&runner_path, runner_contents).unwrap();
+    fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        bundle_root.join("bundle.state"),
+        "schema_version=1\n\
+target=pdf-inspector/local-v1\n\
+adapter=pdftotext-local\n\
+runner_rel=runner/fake_document_runner.py\n",
+    )
+    .unwrap();
+    fs::write(
+        bundle_root.join("verified.state"),
+        "schema_version=1\n\
+target=pdf-inspector/local-v1\n\
+verified_unix_seconds=1\n",
+    )
+    .unwrap();
+    if activate {
+        fs::write(
+            config_root.join("active-document-adapter.state"),
+            "target=pdf-inspector/local-v1\n",
+        )
+        .unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn fake_document_runner() -> String {
+    r#"#!/usr/bin/env python3
+import argparse
+import pathlib
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--target", required=True)
+parser.add_argument("--input", required=True)
+args = parser.parse_args()
+
+text = pathlib.Path(args.input).read_text(encoding="utf-8", errors="ignore")
+sys.stdout.write(text)
+"#
+    .to_string()
+}
+
+#[cfg(unix)]
 fn fake_provider_runner() -> String {
     r#"#!/usr/bin/env python3
 import argparse
@@ -465,6 +543,69 @@ fn provider_enable_help_flag() {
     assert!(stderr.contains("openai/privacy-filter-v1"));
 }
 
+#[test]
+fn document_help_flag() {
+    let (_, stderr, code) = run(&["document", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted document"));
+    assert!(stderr.contains("enable <adapter-or-target>"));
+}
+
+#[test]
+fn document_enable_help_flag() {
+    let (_, stderr, code) = run(&["document", "enable", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted document enable"));
+    assert!(stderr.contains("pdf-inspector/local-v1"));
+}
+
+#[test]
+fn benchmark_help_flag() {
+    let (_, stderr, code) = run(&["benchmark", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted benchmark"));
+    assert!(stderr.contains("--iterations"));
+}
+
+#[test]
+fn benchmark_runs_text_report() {
+    let dir = temp_dir("benchmark_text");
+    let input_path = dir.join("sample.txt");
+    fs::write(&input_path, "email user@example.com").unwrap();
+
+    let (stdout, stderr, code) = run(&[
+        "benchmark",
+        "--input",
+        input_path.to_str().unwrap(),
+        "--iterations",
+        "2",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("Benchmark report"));
+    assert!(stdout.contains("iterations: 2"));
+    assert!(stdout.contains("runs:"));
+}
+
+#[test]
+fn benchmark_runs_json_report() {
+    let dir = temp_dir("benchmark_json");
+    let input_path = dir.join("sample.txt");
+    fs::write(&input_path, "token=sk_live_abcdef123456").unwrap();
+
+    let (stdout, stderr, code) = run(&[
+        "benchmark",
+        "--input",
+        input_path.to_str().unwrap(),
+        "--iterations",
+        "1",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("\"runs\""));
+    assert!(stdout.contains("\"summary\""));
+}
+
 #[cfg(unix)]
 #[test]
 fn provider_current_without_active_shows_onboarding() {
@@ -474,6 +615,17 @@ fn provider_current_without_active_shows_onboarding() {
     assert!(stdout.contains("No active provider configured"));
     assert!(stdout.contains("redacted provider enable apple"));
     assert!(stdout.contains("redacted provider enable openai"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_current_without_active_shows_onboarding() {
+    let (config_root, _data_root, mut envs) = provider_env("document_current_none");
+    add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+    let (stdout, _, code) = run_with_env(&["document", "current"], &envs);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("No active document adapter configured"));
+    assert!(stdout.contains("redacted document enable pdf-inspector"));
 }
 
 #[cfg(unix)]
@@ -488,6 +640,22 @@ fn provider_use_alias_sets_exact_active_target() {
 
     let active_state = fs::read_to_string(config_root.join("active-provider.state")).unwrap();
     assert!(active_state.contains("openai/privacy-filter-v1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_use_alias_sets_exact_active_target() {
+    let (config_root, data_root, mut envs) = provider_env("document_use_alias");
+    add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+    install_fake_document_bundle(&config_root, &data_root, &fake_document_runner(), false);
+
+    let (stdout, stderr, code) = run_with_env(&["document", "use", "pdf-inspector"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: pdf-inspector/local-v1"));
+
+    let active_state =
+        fs::read_to_string(config_root.join("active-document-adapter.state")).unwrap();
+    assert!(active_state.contains("pdf-inspector/local-v1"));
 }
 
 #[cfg(unix)]
@@ -602,6 +770,46 @@ fn privacy_filter_requires_active_provider() {
     assert!(stderr.contains("No active privacy-filter provider is configured"));
     assert!(stderr.contains("redacted provider enable apple"));
     assert!(stderr.contains("redacted provider enable openai"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_adapter_requires_active_adapter() {
+    let (config_root, _data_root, mut envs) = provider_env("document_requires_active");
+    add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+    let pdf_path = config_root.join("sample.pdf");
+    fs::write(&pdf_path, "Alice user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &["--input", pdf_path.to_str().unwrap(), "--document-adapter"],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("No active document adapter is configured"));
+    assert!(stderr.contains("redacted document enable pdf-inspector"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_adapter_redacts_pdf_with_fake_runner() {
+    let (config_root, data_root, mut envs) = provider_env("document_scan_pdf");
+    add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+    install_fake_document_bundle(&config_root, &data_root, &fake_document_runner(), true);
+
+    let pdf_path = data_root.join("report.pdf");
+    fs::write(
+        &pdf_path,
+        "Alice can be reached at user@example.com and +1-555-867-5309",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_with_env(
+        &["--input", pdf_path.to_str().unwrap(), "--document-adapter"],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+    assert!(stdout.contains("[REDACTED:PHONE]"));
 }
 
 #[cfg(unix)]

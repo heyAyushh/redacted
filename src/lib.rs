@@ -1,6 +1,8 @@
+pub mod benchmark;
 pub mod cli;
 pub mod config;
 pub mod detector;
+pub mod document;
 pub mod errors;
 pub mod except;
 pub mod io_safe;

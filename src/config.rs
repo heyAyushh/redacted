@@ -34,6 +34,7 @@ pub struct Config {
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
     pub privacy_filter: bool,
+    pub document_adapter: bool,
 }
 
 impl Config {
@@ -65,6 +66,7 @@ impl Config {
             follow_symlinks: cli.follow_symlinks,
             threads: cli.threads,
             privacy_filter: cli.privacy_filter,
+            document_adapter: cli.document_adapter,
         };
 
         if let Some(ref config_path) = cli.config {

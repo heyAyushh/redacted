@@ -77,11 +77,52 @@ pub struct ProviderArgs {
     pub command: Option<ProviderSubcommand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentArgs {
+    pub help: Option<DocumentHelpTopic>,
+    pub command: Option<DocumentSubcommand>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArgs {
+    pub help: bool,
+    pub input: Option<String>,
+    pub iterations: usize,
+    pub privacy_filter: bool,
+    pub document_adapter: bool,
+    pub format: OutputFormat,
+}
+
 /// Parsed CLI arguments. All fields are explicit — no hidden state.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
     pub except: Option<ExceptArgs>,
     pub provider: Option<ProviderArgs>,
+    pub document: Option<DocumentArgs>,
+    pub benchmark: Option<BenchmarkArgs>,
     pub text: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
@@ -108,6 +149,7 @@ pub struct CliArgs {
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
     pub privacy_filter: bool,
+    pub document_adapter: bool,
     pub show_help: bool,
     pub show_version: bool,
     /// Tracks which flags were explicitly provided on the CLI,
@@ -120,6 +162,8 @@ impl Default for CliArgs {
         Self {
             except: None,
             provider: None,
+            document: None,
+            benchmark: None,
             text: None,
             input: None,
             output: None,
@@ -146,6 +190,7 @@ impl Default for CliArgs {
             follow_symlinks: false,
             threads: None,
             privacy_filter: false,
+            document_adapter: false,
             show_help: false,
             show_version: false,
             explicit_flags: HashSet::new(),
@@ -163,6 +208,8 @@ USAGE:
   redacted [OPTIONS]
   redacted except [--file <PATH>] <add|remove|list> [--detector <NAME> | --literal <VALUE>]
   redacted provider <enable|install|use|current|list|verify|disable> [OPTIONS]
+  redacted document <enable|install|use|current|list|verify|disable> [OPTIONS]
+  redacted benchmark --input <PATH> [OPTIONS]
   echo "secret text" | redacted
   redacted --text "email me at user@example.com"
   redacted --input secrets.txt
@@ -170,6 +217,8 @@ USAGE:
   redacted provider enable apple
   redacted provider enable openai
   redacted provider enable ollama --runtime-model qwen3-coder:30b
+  redacted document enable pdf-inspector
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter
 
 INPUT (resolved in this order):
   --text <TEXT>         Literal text to redact
@@ -202,6 +251,10 @@ PRIVACY FILTER:
   redacted provider ... Manage install, activation, and verification for provider bundles
                         Provider mode is optional and outside the hardened core scan path
 
+DOCUMENT ADAPTER:
+  --document-adapter    Use the active document adapter for supported non-text inputs (PDF)
+  redacted document ... Manage install, activation, and verification for document adapters
+
 TRAVERSAL:
   --recursive           Recurse into directories (default: on)
   --include-hidden      Process hidden files/dirs
@@ -216,6 +269,9 @@ MODES:
   --fail-on-find        Exit non-zero if any findings detected
   --summary             Print summary to stderr
   --config <PATH>       TOML configuration file
+
+BENCHMARK:
+  redacted benchmark    Run repeated dry-run scans and report timings
 
 OTHER:
   --threads <N>         Worker threads for directory mode
@@ -241,7 +297,11 @@ EXAMPLES:
   redacted provider enable apple
   redacted provider enable openai
   redacted provider enable ollama --runtime-model qwen3-coder:30b
+  redacted document enable pdf-inspector
+  redacted --input report.pdf --document-adapter
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
   redacted provider list
+  redacted document list
   redacted except add --detector EMAIL
   redacted except list"#,
         version = VERSION,
@@ -403,6 +463,111 @@ pub fn print_version() {
     eprintln!("redacted {}", VERSION);
 }
 
+pub fn print_document_help(topic: DocumentHelpTopic) {
+    let text = match topic {
+        DocumentHelpTopic::Root => {
+            r#"redacted document — manage optional document adapters.
+
+USAGE:
+  redacted document enable <adapter-or-target>
+  redacted document install <adapter-or-target>
+  redacted document use <adapter-or-target>
+  redacted document current
+  redacted document list
+  redacted document verify [<adapter-or-target> | --all]
+  redacted document disable
+
+OVERVIEW:
+  Document adapters are optional and off by default.
+  They convert supported non-text files into text before scanning.
+  Current built-in alias:
+    pdf-inspector -> pdf-inspector/local-v1
+
+EXAMPLES:
+  redacted document enable pdf-inspector
+  redacted document use pdf-inspector/local-v1
+  redacted document list
+  redacted --input report.pdf --document-adapter"#
+        }
+        DocumentHelpTopic::Enable => {
+            r#"redacted document enable — install if needed, verify, and activate an adapter.
+
+USAGE:
+  redacted document enable <adapter-or-target>
+
+EXAMPLES:
+  redacted document enable pdf-inspector
+  redacted document enable pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Install => {
+            r#"redacted document install — install and verify an adapter without activating it.
+
+USAGE:
+  redacted document install <adapter-or-target>
+
+EXAMPLES:
+  redacted document install pdf-inspector
+  redacted document install pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Use => {
+            r#"redacted document use — switch active adapter to an installed, verified target.
+
+USAGE:
+  redacted document use <adapter-or-target>
+
+EXAMPLES:
+  redacted document use pdf-inspector
+  redacted document use pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Current => {
+            r#"redacted document current — show the active document adapter target.
+
+USAGE:
+  redacted document current"#
+        }
+        DocumentHelpTopic::List => {
+            r#"redacted document list — show aliases, exact targets, and local install state.
+
+USAGE:
+  redacted document list"#
+        }
+        DocumentHelpTopic::Verify => {
+            r#"redacted document verify — verify installed adapter assets and runtime prerequisites.
+
+USAGE:
+  redacted document verify [<adapter-or-target> | --all]
+
+EXAMPLES:
+  redacted document verify
+  redacted document verify pdf-inspector
+  redacted document verify pdf-inspector/local-v1
+  redacted document verify --all"#
+        }
+        DocumentHelpTopic::Disable => {
+            r#"redacted document disable — clear the active document adapter target.
+
+USAGE:
+  redacted document disable"#
+        }
+    };
+    eprintln!("{}", text);
+}
+
+pub fn print_benchmark_help() {
+    eprintln!(
+        r#"redacted benchmark — run repeated dry-run scans and report timings.
+
+USAGE:
+  redacted benchmark --input <PATH> [--iterations <N>] [--privacy-filter] [--document-adapter] [--format text|json]
+
+EXAMPLES:
+  redacted benchmark --input logs/
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter
+  redacted benchmark --input report.pdf --document-adapter
+  redacted benchmark --input corpus/ --iterations 10 --privacy-filter --document-adapter --format json"#
+    );
+}
+
 /// Hand-rolled argument parser. No external dependencies.
 /// Fails fast with actionable error messages.
 pub fn parse_args() -> Result<CliArgs> {
@@ -416,6 +581,12 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     }
     if matches!(args.first().map(String::as_str), Some("provider")) {
         return parse_provider_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("document")) {
+        return parse_document_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("benchmark")) {
+        return parse_benchmark_args(&args[1..]);
     }
 
     let mut cli = CliArgs::default();
@@ -562,6 +733,7 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                 })?);
             }
             "--privacy-filter" => cli.privacy_filter = true,
+            "--document-adapter" => cli.document_adapter = true,
             other => {
                 return Err(RedactError::Usage(format!(
                     "Unknown argument '{}'\n  redacted --help",
@@ -638,6 +810,94 @@ fn parse_provider_args(args: &[String]) -> Result<CliArgs> {
     Ok(cli)
 }
 
+fn parse_document_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let document = if args.is_empty() {
+        DocumentArgs {
+            help: Some(DocumentHelpTopic::Root),
+            command: None,
+        }
+    } else {
+        parse_document_command(args)?
+    };
+    cli.document = Some(document);
+    Ok(cli)
+}
+
+fn parse_benchmark_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let mut benchmark = BenchmarkArgs {
+        help: false,
+        input: None,
+        iterations: 3,
+        privacy_filter: false,
+        document_adapter: false,
+        format: OutputFormat::Text,
+    };
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                benchmark.help = true;
+                break;
+            }
+            "--input" => {
+                i += 1;
+                benchmark.input = Some(require_value(args, i, "--input")?);
+            }
+            "--iterations" => {
+                i += 1;
+                let value = require_value(args, i, "--iterations")?;
+                benchmark.iterations = value.parse::<usize>().map_err(|_| {
+                    RedactError::Usage(format!(
+                        "Invalid iterations '{}'. Expected a positive integer.\n  redacted benchmark --input logs/ --iterations 5",
+                        value
+                    ))
+                })?;
+                if benchmark.iterations == 0 {
+                    return Err(RedactError::Usage(
+                        "Benchmark iterations must be at least 1.\n  redacted benchmark --input logs/ --iterations 1".into(),
+                    ));
+                }
+            }
+            "--privacy-filter" => benchmark.privacy_filter = true,
+            "--document-adapter" => benchmark.document_adapter = true,
+            "--format" => {
+                i += 1;
+                let value = require_value(args, i, "--format")?;
+                benchmark.format = match value.as_str() {
+                    "text" => OutputFormat::Text,
+                    "json" => OutputFormat::Json,
+                    other => {
+                        return Err(RedactError::Usage(format!(
+                            "Unknown benchmark format '{}'. Expected: text, json\n  redacted benchmark --input logs/ --format text",
+                            other
+                        )));
+                    }
+                };
+            }
+            other => {
+                return Err(RedactError::Usage(format!(
+                    "Unknown benchmark argument '{}'\n  redacted benchmark --help",
+                    other
+                )));
+            }
+        }
+        i += 1;
+    }
+
+    if !benchmark.help && benchmark.input.is_none() {
+        return Err(RedactError::Usage(
+            "Benchmark requires --input <PATH>.\n  redacted benchmark --input logs/ --iterations 3"
+                .into(),
+        ));
+    }
+
+    cli.benchmark = Some(benchmark);
+    Ok(cli)
+}
+
 fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
     let first = args[0].as_str();
     if first == "--help" || first == "-h" {
@@ -711,6 +971,87 @@ fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
     })
 }
 
+fn parse_document_command(args: &[String]) -> Result<DocumentArgs> {
+    let first = args[0].as_str();
+    if first == "--help" || first == "-h" {
+        return Ok(DocumentArgs {
+            help: Some(DocumentHelpTopic::Root),
+            command: None,
+        });
+    }
+
+    let topic = document_topic_from_name(first)?;
+    let has_help_flag = args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h");
+    if has_help_flag {
+        return Ok(DocumentArgs {
+            help: Some(topic),
+            command: None,
+        });
+    }
+
+    let command = match first {
+        "enable" => DocumentSubcommand::Enable {
+            selector: parse_document_selector(args, "enable")?,
+        },
+        "install" => DocumentSubcommand::Install {
+            selector: parse_document_selector(args, "install")?,
+        },
+        "use" => DocumentSubcommand::Use {
+            selector: parse_document_selector(args, "use")?,
+        },
+        "current" => {
+            reject_extra_args(args, 1, "current")?;
+            DocumentSubcommand::Current
+        }
+        "list" => {
+            reject_extra_args(args, 1, "list")?;
+            DocumentSubcommand::List
+        }
+        "verify" => parse_document_verify(args)?,
+        "disable" => {
+            reject_extra_args(args, 1, "disable")?;
+            DocumentSubcommand::Disable
+        }
+        other => {
+            return Err(RedactError::Usage(format!(
+                "Unknown document command '{}'\n  redacted document --help",
+                other
+            )));
+        }
+    };
+
+    Ok(DocumentArgs {
+        help: None,
+        command: Some(command),
+    })
+}
+
+fn parse_document_verify(args: &[String]) -> Result<DocumentSubcommand> {
+    let mut selector: Option<String> = None;
+    let mut all = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => all = true,
+            value => {
+                if selector.is_some() || all {
+                    return Err(RedactError::Usage(
+                        "Document verify accepts one selector or --all.\n  redacted document verify pdf-inspector\n  redacted document verify --all".into(),
+                    ));
+                }
+                selector = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    Ok(DocumentSubcommand::Verify { selector, all })
+}
+
 fn parse_provider_verify(args: &[String]) -> Result<ProviderSubcommand> {
     let mut selector: Option<String> = None;
     let mut all = false;
@@ -736,6 +1077,22 @@ fn parse_provider_verify(args: &[String]) -> Result<ProviderSubcommand> {
     Ok(ProviderSubcommand::Verify { selector, all })
 }
 
+fn document_topic_from_name(name: &str) -> Result<DocumentHelpTopic> {
+    match name {
+        "enable" => Ok(DocumentHelpTopic::Enable),
+        "install" => Ok(DocumentHelpTopic::Install),
+        "use" => Ok(DocumentHelpTopic::Use),
+        "current" => Ok(DocumentHelpTopic::Current),
+        "list" => Ok(DocumentHelpTopic::List),
+        "verify" => Ok(DocumentHelpTopic::Verify),
+        "disable" => Ok(DocumentHelpTopic::Disable),
+        other => Err(RedactError::Usage(format!(
+            "Unknown document command '{}'\n  redacted document --help",
+            other
+        ))),
+    }
+}
+
 fn provider_topic_from_name(name: &str) -> Result<ProviderHelpTopic> {
     match name {
         "enable" => Ok(ProviderHelpTopic::Enable),
@@ -750,6 +1107,16 @@ fn provider_topic_from_name(name: &str) -> Result<ProviderHelpTopic> {
             other
         ))),
     }
+}
+
+fn parse_document_selector(args: &[String], command: &str) -> Result<String> {
+    if args.len() != 2 {
+        return Err(RedactError::Usage(format!(
+            "Document command '{}' requires <adapter-or-target>.\n  redacted document {} pdf-inspector",
+            command, command
+        )));
+    }
+    Ok(args[1].clone())
 }
 
 fn parse_provider_selector_with_runtime_model(
@@ -1014,6 +1381,92 @@ mod tests {
     fn parse_privacy_filter_flag() {
         let cli = parse_args_from(&args(&["--text", "hello", "--privacy-filter"])).unwrap();
         assert!(cli.privacy_filter);
+    }
+
+    #[test]
+    fn parse_document_root_help() {
+        let cli = parse_args_from(&args(&["document"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: Some(DocumentHelpTopic::Root),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_enable_alias() {
+        let cli = parse_args_from(&args(&["document", "enable", "pdf-inspector"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: None,
+                command: Some(DocumentSubcommand::Enable {
+                    selector: "pdf-inspector".into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_verify_all() {
+        let cli = parse_args_from(&args(&["document", "verify", "--all"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: None,
+                command: Some(DocumentSubcommand::Verify {
+                    selector: None,
+                    all: true,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_subcommand_help() {
+        let cli = parse_args_from(&args(&["document", "use", "--help"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: Some(DocumentHelpTopic::Use),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_benchmark_command() {
+        let cli = parse_args_from(&args(&[
+            "benchmark",
+            "--input",
+            "logs",
+            "--iterations",
+            "5",
+            "--privacy-filter",
+            "--document-adapter",
+            "--format",
+            "json",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.benchmark,
+            Some(BenchmarkArgs {
+                help: false,
+                input: Some("logs".into()),
+                iterations: 5,
+                privacy_filter: true,
+                document_adapter: true,
+                format: OutputFormat::Json,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_adapter_flag() {
+        let cli = parse_args_from(&args(&["--input", "doc.pdf", "--document-adapter"])).unwrap();
+        assert!(cli.document_adapter);
     }
 
     #[test]
