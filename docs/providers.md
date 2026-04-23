@@ -18,6 +18,8 @@ This document describes the optional provider subsystem behind
 
 `redacted` supports two selector forms:
 
+- Alias: `apple`
+- Exact target: `apple/foundation-v1`
 - Alias: `openai`
 - Exact target: `openai/privacy-filter-v1`
 - Alias: `ollama`
@@ -28,11 +30,13 @@ Commands print the resolved target before they change local state.
 
 Current built-in mapping:
 
+- `apple -> apple/foundation-v1`
 - `openai -> openai/privacy-filter-v1`
 - `ollama -> ollama/structured-v1`
 
 Support tiers:
 
+- `apple/foundation-v1` is the supported Apple-local system-model path.
 - `openai/privacy-filter-v1` is the supported token-span path.
 - `ollama/structured-v1` is an experimental generative-extraction path.
 
@@ -51,10 +55,17 @@ redacted provider disable
 Human-friendly setup:
 
 ```bash
+redacted provider enable apple
 redacted provider enable openai
 redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted --privacy-filter --input logs/
 ```
+
+For Apple:
+
+- `apple` builds a small local Swift runner around Apple Foundation Models.
+- It requires macOS 26+ with Apple Intelligence enabled and the system model ready.
+- It does not download a separate model bundle during install.
 
 For Ollama:
 
@@ -80,6 +91,18 @@ Important files:
 - Installed bundles: `providers/<provider>/<model>/...`
 
 Example bundle layout:
+
+```text
+<data-root>/providers/apple/foundation-v1/
+  bundle.state
+  verified.state
+  runtime/
+  runner/
+    apple_foundation_runner
+    apple_foundation_runner.swift
+```
+
+OpenAI bundle layout:
 
 ```text
 <data-root>/providers/openai/privacy-filter-v1/
@@ -138,6 +161,9 @@ Normal scans with `--privacy-filter` do **not** download anything.
 
 Adapter-specific notes:
 
+- `apple/foundation-v1` installs a small local Swift runner and verifies the
+  built runner bundle in place. Runtime readiness is checked against the system
+  on-device model when the provider is enabled, used, or scanned.
 - `openai/privacy-filter-v1` installs a bundle-local OPF runtime plus pinned
   model artifacts and verifies them by size and SHA-256.
 - `ollama/structured-v1` installs a small local runner plus runtime config and
@@ -189,16 +215,20 @@ Rules:
 
 Internally, adapters are free to do provider-specific translation. For example:
 
+- the Apple adapter asks the system on-device model for structured span output
+  and expands repeated exact matches across the same text
 - the OpenAI adapter converts OPF span output into the common span ABI
 - the Ollama adapter asks the local Ollama API for structured JSON and then
   converts exact snippet matches into byte spans
 
 That distinction matters:
 
+- the Apple path uses the system on-device model and never ships extra model weights
 - the OpenAI path starts from a model built for token/span labeling
 - the Ollama path asks a generative model to emit structured JSON and then
   reconstructs spans from exact substring matches
-- because of that, the Ollama path is lower-fidelity and should be treated as experimental
+- because of that, the Apple and Ollama paths are structured-extraction adapters, while the OpenAI path is the higher-fidelity token-span path
+- the Ollama path is still lower-trust and should be treated as experimental
 
 ## Canonical Label Mapping
 
@@ -219,10 +249,14 @@ detector names:
 Common failures and the next command to run:
 
 - No active provider:
+  - `redacted provider enable apple`
   - `redacted provider enable openai`
+- Apple Intelligence not enabled or system model not ready:
+  - enable Apple Intelligence in Settings, wait for the model to finish, then run `redacted provider use apple`
 - Want the Ollama-backed adapter instead:
   - `redacted provider enable ollama --runtime-model qwen3-coder:30b`
 - Bundle installed but not active:
+  - `redacted provider use apple`
   - `redacted provider use openai`
 - Ollama API not running:
   - start Ollama locally, then run `redacted provider enable ollama --runtime-model qwen3-coder:30b`

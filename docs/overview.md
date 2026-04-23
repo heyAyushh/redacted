@@ -53,7 +53,10 @@ redacted --input .env --dry-run
 # CI gate: fail the build if secrets are found
 redacted --input src/ --dry-run --fail-on-find
 
-# Install and enable the default privacy-filter provider
+# Install and enable the Apple-local privacy-filter provider
+redacted provider enable apple
+
+# Or install and enable the pinned OpenAI provider
 redacted provider enable openai
 
 # Or use the Ollama-backed provider
@@ -75,7 +78,9 @@ redacted --privacy-filter --input logs/
 
 - The default Rust-only detector path is the hardened core of the tool.
 - Provider mode is optional and off by default.
-- Provider mode adds an adapter boundary around an external runtime such as the local OpenAI OPF bundle or a local Ollama API.
+- Provider mode adds an adapter boundary around a local system model or an external runtime such as the OpenAI OPF bundle or a local Ollama API.
 - `redacted` still owns the final redaction output, reports, and file writes even when `--privacy-filter` is enabled.
+- The Apple path is the lightest Mac option because it uses the system on-device model.
 - The OpenAI path is the supported token-span runtime.
+- The Apple path is a supported structured-extraction runtime on macOS 26+.
 - The Ollama path is experimental because it relies on structured generation instead of native span labeling.

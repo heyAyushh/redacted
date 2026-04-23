@@ -128,6 +128,7 @@ default Rust-only detector path because it wraps external runtimes.
 
 Current support levels:
 
+- `apple/foundation-v1` is the supported Apple-local system-model path on macOS 26+
 - `openai/privacy-filter-v1` is the supported token-span path
 - `ollama/structured-v1` is an experimental generative-extraction path
 
@@ -141,18 +142,21 @@ Current support levels:
 | `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
 | `redacted provider disable` | Clear the active provider selection |
 
-Aliases are human-friendly shortcuts such as `openai` and `ollama`. Exact
-targets are stable IDs such as `openai/privacy-filter-v1` and
-`ollama/structured-v1`. When an alias is used, the CLI prints the resolved exact
-target before changing local state.
+Aliases are human-friendly shortcuts such as `apple`, `openai`, and `ollama`.
+Exact targets are stable IDs such as `apple/foundation-v1`,
+`openai/privacy-filter-v1`, and `ollama/structured-v1`. When an alias is used,
+the CLI prints the resolved exact target before changing local state.
 
 Examples:
 
 ```bash
+redacted provider enable apple
 redacted provider enable openai
 redacted provider enable ollama --runtime-model qwen3-coder:30b
+redacted provider install apple/foundation-v1
 redacted provider install openai/privacy-filter-v1
 redacted provider install ollama/structured-v1 --runtime-model qwen3-coder:30b
+redacted provider use apple
 redacted provider use openai
 redacted provider use ollama --runtime-model qwen3-coder:30b
 redacted provider current
@@ -162,12 +166,15 @@ redacted provider disable
 
 Notes:
 
+- `apple` resolves to `apple/foundation-v1`
 - `openai` resolves to `openai/privacy-filter-v1`
 - `ollama` resolves to `ollama/structured-v1`
 - `redacted --privacy-filter ...` never downloads anything during a scan
+- `redacted provider enable apple` builds a small local runner and requires Apple Intelligence on macOS 26+
 - `redacted provider enable ollama` requires a running local Ollama API
 - `redacted provider enable ollama` auto-picks a model only when exactly one local Ollama model exists
 - otherwise pass `--runtime-model <NAME>`
+- `apple` uses the system on-device model and is the lightest Mac path
 - `ollama` relies on structured JSON generation rather than a native token-classification runtime
 
 ---
@@ -278,7 +285,11 @@ redacted --text "user@example.com" --report-json 2>report.json
 # Run the extra provider-backed pass with the active provider
 redacted --privacy-filter --input logs/
 
-# Switch to the Ollama-backed provider first
+# Switch to the Apple-local provider first
+redacted provider enable apple
+redacted --privacy-filter --input logs/
+
+# Or switch to the Ollama-backed provider first
 redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted --privacy-filter --input logs/
 ```
