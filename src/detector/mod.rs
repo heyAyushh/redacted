@@ -302,7 +302,7 @@ mod tests {
                 matched_len: 33,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "GENERIC_SECRET");
         assert_eq!(merged[0].start, 0);
@@ -329,7 +329,7 @@ mod tests {
                 matched_len: 16,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "SECOND");
         assert_eq!(merged[0].start, 0);
