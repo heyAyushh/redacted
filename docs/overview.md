@@ -57,7 +57,7 @@ redacted --input src/ --dry-run --fail-on-find
 redacted provider enable openai
 
 # Or use the Ollama-backed provider
-redacted provider enable ollama
+redacted provider enable ollama --runtime-model qwen3-coder:30b
 
 # Run the extra provider-backed pass
 redacted --privacy-filter --input logs/

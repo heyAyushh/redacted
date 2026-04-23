@@ -129,13 +129,13 @@ default Rust-only detector path because it wraps external runtimes.
 Current support levels:
 
 - `openai/privacy-filter-v1` is the supported token-span path
-- `ollama/gpt-oss-v1` is an experimental generative-extraction path
+- `ollama/structured-v1` is an experimental generative-extraction path
 
 | Command | Description |
 |---------|-------------|
-| `redacted provider enable <provider-or-target>` | Easy onboarding: install if missing, verify, and activate |
-| `redacted provider install <provider-or-target>` | Download and verify a bundle without activating it |
-| `redacted provider use <provider-or-target>` | Switch the active provider to an installed, verified bundle |
+| `redacted provider enable <provider-or-target> [--runtime-model <NAME>]` | Easy onboarding: install if missing, verify, and activate |
+| `redacted provider install <provider-or-target> [--runtime-model <NAME>]` | Download and verify a bundle without activating it |
+| `redacted provider use <provider-or-target> [--runtime-model <NAME>]` | Switch the active provider to an installed, verified bundle |
 | `redacted provider current` | Show the active exact target |
 | `redacted provider list` | Show aliases, exact targets, and local install state |
 | `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
@@ -143,18 +143,18 @@ Current support levels:
 
 Aliases are human-friendly shortcuts such as `openai` and `ollama`. Exact
 targets are stable IDs such as `openai/privacy-filter-v1` and
-`ollama/gpt-oss-v1`. When an alias is used, the CLI prints the resolved exact
+`ollama/structured-v1`. When an alias is used, the CLI prints the resolved exact
 target before changing local state.
 
 Examples:
 
 ```bash
 redacted provider enable openai
-redacted provider enable ollama
+redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted provider install openai/privacy-filter-v1
-redacted provider install ollama/gpt-oss-v1
+redacted provider install ollama/structured-v1 --runtime-model qwen3-coder:30b
 redacted provider use openai
-redacted provider use ollama
+redacted provider use ollama --runtime-model qwen3-coder:30b
 redacted provider current
 redacted provider verify --all
 redacted provider disable
@@ -163,9 +163,11 @@ redacted provider disable
 Notes:
 
 - `openai` resolves to `openai/privacy-filter-v1`
-- `ollama` resolves to `ollama/gpt-oss-v1`
+- `ollama` resolves to `ollama/structured-v1`
 - `redacted --privacy-filter ...` never downloads anything during a scan
 - `redacted provider enable ollama` requires a running local Ollama API
+- `redacted provider enable ollama` auto-picks a model only when exactly one local Ollama model exists
+- otherwise pass `--runtime-model <NAME>`
 - `ollama` relies on structured JSON generation rather than a native token-classification runtime
 
 ---
@@ -277,7 +279,7 @@ redacted --text "user@example.com" --report-json 2>report.json
 redacted --privacy-filter --input logs/
 
 # Switch to the Ollama-backed provider first
-redacted provider enable ollama
+redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted --privacy-filter --input logs/
 ```
 

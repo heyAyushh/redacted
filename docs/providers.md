@@ -21,7 +21,7 @@ This document describes the optional provider subsystem behind
 - Alias: `openai`
 - Exact target: `openai/privacy-filter-v1`
 - Alias: `ollama`
-- Exact target: `ollama/gpt-oss-v1`
+- Exact target: `ollama/structured-v1`
 
 Aliases are onboarding shortcuts. They always resolve to a pinned exact target.
 Commands print the resolved target before they change local state.
@@ -29,19 +29,19 @@ Commands print the resolved target before they change local state.
 Current built-in mapping:
 
 - `openai -> openai/privacy-filter-v1`
-- `ollama -> ollama/gpt-oss-v1`
+- `ollama -> ollama/structured-v1`
 
 Support tiers:
 
 - `openai/privacy-filter-v1` is the supported token-span path.
-- `ollama/gpt-oss-v1` is an experimental generative-extraction path.
+- `ollama/structured-v1` is an experimental generative-extraction path.
 
 ## Commands
 
 ```bash
-redacted provider enable <provider-or-target>
-redacted provider install <provider-or-target>
-redacted provider use <provider-or-target>
+redacted provider enable <provider-or-target> [--runtime-model <NAME>]
+redacted provider install <provider-or-target> [--runtime-model <NAME>]
+redacted provider use <provider-or-target> [--runtime-model <NAME>]
 redacted provider current
 redacted provider list
 redacted provider verify [<provider-or-target> | --all]
@@ -52,9 +52,15 @@ Human-friendly setup:
 
 ```bash
 redacted provider enable openai
-redacted provider enable ollama
+redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted --privacy-filter --input logs/
 ```
+
+For Ollama:
+
+- `--runtime-model <NAME>` chooses the local Ollama model to use.
+- If you omit `--runtime-model` and there is exactly one local Ollama model, that model is used automatically.
+- If there are multiple local Ollama models, `enable` and `install` fail fast and ask you to choose one explicitly.
 
 ## State and Install Layout
 
@@ -95,7 +101,7 @@ Example bundle layout:
 Ollama bundle layout:
 
 ```text
-<data-root>/providers/ollama/gpt-oss-v1/
+<data-root>/providers/ollama/structured-v1/
   bundle.state
   verified.state
   runtime/
@@ -134,7 +140,7 @@ Adapter-specific notes:
 
 - `openai/privacy-filter-v1` installs a bundle-local OPF runtime plus pinned
   model artifacts and verifies them by size and SHA-256.
-- `ollama/gpt-oss-v1` installs a small local runner plus runtime config and
+- `ollama/structured-v1` installs a small local runner plus runtime config and
   verifies that the local Ollama API can serve the configured model.
 
 ## Active Provider State
@@ -215,11 +221,11 @@ Common failures and the next command to run:
 - No active provider:
   - `redacted provider enable openai`
 - Want the Ollama-backed adapter instead:
-  - `redacted provider enable ollama`
+  - `redacted provider enable ollama --runtime-model qwen3-coder:30b`
 - Bundle installed but not active:
   - `redacted provider use openai`
 - Ollama API not running:
-  - start Ollama locally, then run `redacted provider enable ollama`
+  - start Ollama locally, then run `redacted provider enable ollama --runtime-model qwen3-coder:30b`
 - Bundle missing verification stamp:
   - `redacted provider verify openai`
 - Need to see what is installed:

@@ -159,7 +159,7 @@ Current built-in aliases and targets:
 - Adapter: local OPF runner around the OpenAI Privacy Filter model
 
 - Alias: `ollama`
-- Exact target: `ollama/gpt-oss-v1`
+- Exact target: `ollama/structured-v1`
 - Adapter: local Ollama API runner using structured JSON extraction
 - Support level: experimental
 
@@ -181,7 +181,7 @@ So the feature is an **extra pass**, not a second output mode and not a provider
 redacted provider enable openai
 
 # Or use the Ollama-backed adapter
-redacted provider enable ollama
+redacted provider enable ollama --runtime-model qwen3-coder:30b
 
 # Scan with the extra pass enabled
 redacted --privacy-filter --input logs/
@@ -196,7 +196,7 @@ resolved target: openai/privacy-filter-v1
 or:
 
 ```text
-resolved target: ollama/gpt-oss-v1
+resolved target: ollama/structured-v1
 ```
 
 ### Switching Later
@@ -205,7 +205,7 @@ resolved target: ollama/gpt-oss-v1
 redacted provider list
 redacted provider current
 redacted provider use openai
-redacted provider use ollama
+redacted provider use ollama --runtime-model qwen3-coder:30b
 redacted provider disable
 ```
 
@@ -216,7 +216,9 @@ redacted provider disable
 - If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
 - The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
 - `openai` and `ollama` are both adapter modes, not extensions of the hardened core guarantee.
-- The Ollama target requires a running local Ollama API and may pull the configured local model during `install` or `enable`.
+- The Ollama target requires a running local Ollama API and uses a chosen local model rather than a hardcoded default model identity.
+- `redacted provider enable ollama` will auto-pick the model only when Ollama has exactly one local model; otherwise pass `--runtime-model <NAME>`.
+- `install` or `enable` may pull the configured Ollama model if it is not already available locally.
 - The Ollama target is an experimental generative-extraction path, not a native token-span runtime like the OpenAI Privacy Filter path.
 
 ---
