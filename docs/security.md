@@ -43,6 +43,17 @@ guarantee above.
 - Provider bundles are installed under a dedicated app-data directory, verified
   when installed, and selected explicitly before they can be used.
 
+### Explicit Document Adapter Runtime
+
+The optional document adapter workflow is also separate from the default
+guarantee.
+
+- `redacted document install ...` and `redacted document enable ...` may set up
+  an external extraction runtime on purpose.
+- `redacted --document-adapter ...` never installs adapters during a scan.
+- Document adapter bundles are installed under a dedicated app-data directory,
+  verified when installed, and selected explicitly before use.
+
 ### Provider Trust Boundary
 
 The provider subsystem is intentionally **not** part of the hardened core
@@ -63,6 +74,19 @@ guarantee.
   equivalent in fidelity to the OpenAI Privacy Filter path.
 - If a provider runtime crashes, hangs, or misclassifies text, that impacts the
   optional provider pass, not the default core scan path.
+
+### Document Adapter Trust Boundary
+
+The document adapter subsystem is also **not** part of the hardened core
+guarantee.
+
+- The Rust-only default path remains the baseline hardened mode.
+- Document adapter mode is an explicit adapter boundary around external
+  extraction runtimes (for v1: local `pdftotext`).
+- If a document extraction runtime fails, that impacts the optional
+  `--document-adapter` flow, not the default scan path.
+- Even with document adapters enabled, `redacted` still owns detector logic,
+  policy application, masking, reporting, and output writes.
 
 ### No Regex Engine
 

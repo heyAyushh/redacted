@@ -77,6 +77,15 @@ redacted provider enable openai
 # Run the extra provider-backed pass
 redacted --input logs/ --output cleaned/ --summary --privacy-filter
 
+# Enable the PDF document adapter once
+redacted document enable pdf-inspector
+
+# Scan a PDF through the document adapter path
+redacted --input report.pdf --document-adapter
+
+# Run a repeatable benchmark
+redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
+
 # Dry-run in CI (exit code 3 if secrets found)
 redacted --input . --fail-on-find --dry-run
 
@@ -245,6 +254,43 @@ redacted provider disable
 
 ---
 
+## Document Adapters
+
+`redacted` can also run an optional document extraction step for supported non-text files.
+
+- Feature flag: `--document-adapter`
+- Current built-in alias: `pdf-inspector`
+- Exact target: `pdf-inspector/local-v1`
+- Runtime: local `pdftotext`
+
+When `--document-adapter` is enabled and the input is a supported document type (`.pdf` in v1), `redacted` extracts text first and then applies the same detector, merge, retain/except, reporting, and redaction pipeline.
+
+Setup flow:
+
+```bash
+redacted document enable pdf-inspector
+redacted --input report.pdf --document-adapter
+```
+
+Switching and lifecycle:
+
+```bash
+redacted document list
+redacted document current
+redacted document use pdf-inspector/local-v1
+redacted document verify --all
+redacted document disable
+```
+
+Important behavior:
+
+- Document adapters are off by default.
+- Scans do not auto-install adapters.
+- `--document-adapter` fails fast if no active adapter is configured.
+- In-place rewrite is blocked for document-adapter extracted files; use `--output` instead.
+
+---
+
 ## CLI Reference
 
 ### Input
@@ -293,6 +339,7 @@ redacted provider disable
 | `--summary` | Print summary to stderr |
 | `--config <PATH>` | TOML configuration file |
 | `--privacy-filter` | Run the active privacy-filter provider as one extra detection pass |
+| `--document-adapter` | Run the active document adapter for supported non-text inputs |
 
 ### Other
 
@@ -324,6 +371,41 @@ redacted provider install openai/privacy-filter-v1
 redacted provider use apple
 redacted provider use openai
 redacted provider verify --all
+```
+
+### Document Commands
+
+```bash
+redacted document enable <adapter-or-target>
+redacted document install <adapter-or-target>
+redacted document use <adapter-or-target>
+redacted document current
+redacted document list
+redacted document verify [<adapter-or-target> | --all]
+redacted document disable
+```
+
+Examples:
+
+```bash
+redacted document enable pdf-inspector
+redacted document install pdf-inspector/local-v1
+redacted document use pdf-inspector
+redacted document verify --all
+```
+
+### Benchmark Command
+
+```bash
+redacted benchmark --input <PATH> [--iterations <N>] [--privacy-filter] [--document-adapter] [--format text|json]
+```
+
+Examples:
+
+```bash
+redacted benchmark --input logs/
+redacted benchmark --input logs/ --iterations 10 --privacy-filter
+redacted benchmark --input report.pdf --document-adapter --format json
 ```
 
 ---
@@ -376,6 +458,7 @@ CLI flags always take precedence over config file values.
 - **Binary detection.** Files containing null bytes or a high ratio of non-text bytes are skipped by default.
 - **Bounded custom patterns.** The built-in mini-regex engine caps quantifier repetitions at 4096.
 - **Explicit provider boundary.** Optional provider bundles are installed separately, selected explicitly, and only run when `--privacy-filter` is present.
+- **Explicit document-adapter boundary.** Optional document adapter bundles are installed separately, selected explicitly, and only run when `--document-adapter` is present.
 
 ---
 

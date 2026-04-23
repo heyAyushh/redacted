@@ -8,7 +8,7 @@
 
 2. **Purpose-built scanners.** Instead of compiling regular expressions at runtime, each detector is a hand-written, linear-time scanner with bounded scan windows. This eliminates an entire class of denial-of-service attacks (regex catastrophic backtracking / ReDoS).
 
-3. **Offline by default.** The built-in scan path never opens a socket. It reads local input, writes local output, and exits. Optional provider commands are the only commands that download or talk to external provider runtimes, and those actions are explicit.
+3. **Offline by default.** The built-in scan path never opens a socket. It reads local input, writes local output, and exits. Optional provider and document-adapter commands are explicit setup paths for external runtimes.
 
 4. **Safe defaults.** Binary files are skipped, hidden files are excluded, symlinks are not followed, and file size is capped at 25 MiB. Every default is the conservative choice.
 
@@ -31,6 +31,8 @@
 | TOML configuration | Persist settings and custom patterns in a config file |
 | Directory traversal | Recursively process entire directory trees, preserving structure in the output directory |
 | Optional privacy-filter providers | Add one explicit extra detection pass from a separately installed local provider adapter |
+| Optional document adapters | Extract supported non-text files (PDF in v1) into text before scanning |
+| Benchmark mode | Repeat dry-run scans and report timing/summary metrics with `redacted benchmark` |
 
 ## Quick Start
 
@@ -64,13 +66,22 @@ redacted provider enable ollama --runtime-model qwen3-coder:30b
 
 # Run the extra provider-backed pass
 redacted --privacy-filter --input logs/
+
+# Enable the PDF document adapter
+redacted document enable pdf-inspector
+
+# Scan a PDF through the adapter
+redacted --input report.pdf --document-adapter
+
+# Run a repeatable benchmark
+redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
 ```
 
 ## How It Works
 
 1. **Parse input.** CLI arguments are parsed by a hand-rolled parser (no external CLI framework). A TOML config file is optionally merged.
 2. **Build detector registry.** All built-in detectors are instantiated. Allow/deny lists and custom patterns are applied to filter the set.
-3. **Detect.** Each detector scans the input text in a single linear pass. If `--privacy-filter` is enabled, the active local provider bundle runs one extra pass after the built-in detectors. Findings are collected, sorted by position, and overlapping matches are merged (higher-confidence match wins).
+3. **Detect.** Each detector scans the input text in a single linear pass. If `--document-adapter` is enabled for a supported non-text file, text extraction runs first. If `--privacy-filter` is enabled, the active local provider bundle runs one extra pass after the built-in detectors. Findings are collected, sorted by position, and overlapping matches are merged (higher-confidence match wins).
 4. **Redact.** Each finding's span is replaced with a marker like `[REDACTED:EMAIL]`, or a custom replacement string.
 5. **Report.** Depending on flags, the tool writes redacted text to stdout/file, prints a summary to stderr, and/or emits a structured JSON report.
 
@@ -78,8 +89,11 @@ redacted --privacy-filter --input logs/
 
 - The default Rust-only detector path is the hardened core of the tool.
 - Provider mode is optional and off by default.
+- Document-adapter mode is optional and off by default.
 - Provider mode adds an adapter boundary around a local system model or an external runtime such as the OpenAI OPF bundle or a local Ollama API.
+- Document-adapter mode adds an adapter boundary around extraction runtimes such as local `pdftotext`.
 - `redacted` still owns the final redaction output, reports, and file writes even when `--privacy-filter` is enabled.
+- `redacted` still owns the detector/policy/redaction/report pipeline when `--document-adapter` is enabled.
 - The Apple path is the lightest Mac option because it uses the system on-device model.
 - The OpenAI path is the supported token-span runtime.
 - The Apple path is a supported structured-extraction runtime on macOS 26+.

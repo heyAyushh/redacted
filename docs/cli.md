@@ -5,12 +5,15 @@
 ``` 
 redacted [OPTIONS]
 redacted provider <COMMAND> [OPTIONS]
+redacted document <COMMAND> [OPTIONS]
+redacted benchmark --input <PATH> [OPTIONS]
 echo "text" | redacted [OPTIONS]
 ```
 
-The binary is called `redacted`. Normal scans still use flags directly. The only
-subcommand family is `redacted provider ...`, which manages optional
-privacy-filter bundles outside the hardened Rust-only core scan path.
+The binary is called `redacted`. Normal scans still use flags directly.
+`redacted provider ...` manages optional privacy-filter bundles.
+`redacted document ...` manages optional document adapters.
+`redacted benchmark ...` runs repeatable local benchmark scans.
 
 ---
 
@@ -38,6 +41,7 @@ If none of the above are provided and stdin is a terminal (not piped), the tool 
 | `--report-json` | — | Write redacted content normally **and** emit a structured JSON report to stderr |
 | `--replacement` | `<STRING>` | Custom replacement string instead of the default `[REDACTED:<TYPE>]` marker |
 | `--privacy-filter` | — | Run the active privacy-filter provider as one extra optional detection pass |
+| `--document-adapter` | — | Run the active document adapter for supported non-text files (`.pdf` in v1) |
 
 ### Default Replacement Format
 
@@ -176,6 +180,70 @@ Notes:
 - otherwise pass `--runtime-model <NAME>`
 - `apple` uses the system on-device model and is the lightest Mac path
 - `ollama` relies on structured JSON generation rather than a native token-classification runtime
+
+---
+
+## Document Commands
+
+Use `redacted document ...` to install, verify, and switch optional
+document adapters. This path is explicit and lower-trust than the
+default Rust-only detector path because it wraps an external extraction runtime.
+
+Current built-in target:
+
+- `pdf-inspector/local-v1` backed by local `pdftotext`
+
+| Command | Description |
+|---------|-------------|
+| `redacted document enable <adapter-or-target>` | Easy onboarding: install if missing, verify, and activate |
+| `redacted document install <adapter-or-target>` | Install and verify without activating |
+| `redacted document use <adapter-or-target>` | Switch the active adapter to an installed, verified target |
+| `redacted document current` | Show the active exact target |
+| `redacted document list` | Show aliases, exact targets, and local install state |
+| `redacted document verify [<adapter-or-target> \| --all]` | Re-verify installed adapter assets and runtime prerequisites |
+| `redacted document disable` | Clear the active adapter selection |
+
+Examples:
+
+```bash
+redacted document enable pdf-inspector
+redacted document install pdf-inspector/local-v1
+redacted document use pdf-inspector
+redacted document current
+redacted document verify --all
+redacted document disable
+```
+
+Notes:
+
+- `pdf-inspector` resolves to `pdf-inspector/local-v1`
+- `redacted --document-adapter ...` never installs adapters during a scan
+- if no active adapter is configured, `--document-adapter` fails fast with the next setup command
+- `--in-place` is blocked for document-adapter extracted files; use `--output` for persisted output
+
+---
+
+## Benchmark Command
+
+Use `redacted benchmark ...` for repeatable local dry-run measurements.
+
+```bash
+redacted benchmark --input <PATH> [--iterations <N>] [--privacy-filter] [--document-adapter] [--format text|json]
+```
+
+Examples:
+
+```bash
+redacted benchmark --input logs/
+redacted benchmark --input logs/ --iterations 10 --privacy-filter
+redacted benchmark --input report.pdf --document-adapter --format json
+```
+
+Notes:
+
+- benchmark runs do not write output files (`--dry-run` under the hood)
+- benchmark output includes per-run timing and summary metrics
+- the same provider/document adapter preconditions apply when those flags are enabled
 
 ---
 
