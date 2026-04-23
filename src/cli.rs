@@ -50,12 +50,24 @@ pub enum ProviderHelpTopic {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderSubcommand {
-    Enable { selector: String },
-    Install { selector: String },
-    Use { selector: String },
+    Enable {
+        selector: String,
+        runtime_model: Option<String>,
+    },
+    Install {
+        selector: String,
+        runtime_model: Option<String>,
+    },
+    Use {
+        selector: String,
+        runtime_model: Option<String>,
+    },
     Current,
     List,
-    Verify { selector: Option<String>, all: bool },
+    Verify {
+        selector: Option<String>,
+        all: bool,
+    },
     Disable,
 }
 
@@ -156,6 +168,7 @@ USAGE:
   redacted --input secrets.txt
   redacted --input logs/ --output cleaned/
   redacted provider enable openai
+  redacted provider enable ollama --runtime-model qwen3-coder:30b
 
 INPUT (resolved in this order):
   --text <TEXT>         Literal text to redact
@@ -225,7 +238,7 @@ EXAMPLES:
   redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
   redacted --text "Alice was born on 1990-01-02" --privacy-filter
   redacted provider enable openai
-  redacted provider enable ollama
+  redacted provider enable ollama --runtime-model qwen3-coder:30b
   redacted provider list
   redacted except add --detector EMAIL
   redacted except list"#,
@@ -239,9 +252,9 @@ pub fn print_provider_help(topic: ProviderHelpTopic) {
             r#"redacted provider — manage privacy-filter providers.
 
 USAGE:
-  redacted provider enable <provider-or-target>
-  redacted provider install <provider-or-target>
-  redacted provider use <provider-or-target>
+  redacted provider enable <provider-or-target> [--runtime-model <NAME>]
+  redacted provider install <provider-or-target> [--runtime-model <NAME>]
+  redacted provider use <provider-or-target> [--runtime-model <NAME>]
   redacted provider current
   redacted provider list
   redacted provider verify [<provider-or-target> | --all]
@@ -258,11 +271,11 @@ OVERVIEW:
 
 EXAMPLES:
   redacted provider enable openai
-  redacted provider enable ollama
+  redacted provider enable ollama --runtime-model qwen3-coder:30b
   redacted provider install openai/privacy-filter-v1
-  redacted provider install ollama/gpt-oss-v1
+  redacted provider install ollama/structured-v1 --runtime-model qwen3-coder:30b
   redacted provider use openai
-  redacted provider use ollama
+  redacted provider use ollama --runtime-model qwen3-coder:30b
   redacted provider current
   redacted provider list
   redacted provider verify --all
@@ -276,13 +289,14 @@ NEXT STEP:
             r#"redacted provider enable — install if needed, verify, and activate a provider.
 
 USAGE:
-  redacted provider enable <provider-or-target>
+  redacted provider enable <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
   redacted provider enable openai
   redacted provider enable openai/privacy-filter-v1
   redacted provider enable ollama
-  redacted provider enable ollama/gpt-oss-v1
+  redacted provider enable ollama --runtime-model qwen3-coder:30b
+  redacted provider enable ollama/structured-v1 --runtime-model qwen3-coder:30b
 
 BEHAVIOR:
   - Resolves aliases such as `openai` to a pinned exact target.
@@ -290,6 +304,8 @@ BEHAVIOR:
   - Verifies the installed bundle if no verification stamp is present.
   - Marks the resolved exact target as active.
   - Ollama targets require a running local Ollama API.
+  - Ollama targets use `--runtime-model <NAME>` to choose the local Ollama model.
+  - If `--runtime-model` is omitted and Ollama has exactly one local model, that model is used automatically.
   - Ollama targets are experimental and rely on structured JSON generation,
     not a native token-classification runtime."#
         }
@@ -297,29 +313,32 @@ BEHAVIOR:
             r#"redacted provider install — download and verify a provider bundle without activating it.
 
 USAGE:
-  redacted provider install <provider-or-target>
+  redacted provider install <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
   redacted provider install openai
   redacted provider install openai/privacy-filter-v1
   redacted provider install ollama
-  redacted provider install ollama/gpt-oss-v1"#
+  redacted provider install ollama --runtime-model qwen3-coder:30b
+  redacted provider install ollama/structured-v1 --runtime-model qwen3-coder:30b"#
         }
         ProviderHelpTopic::Use => {
             r#"redacted provider use — switch the active provider to an installed, verified bundle.
 
 USAGE:
-  redacted provider use <provider-or-target>
+  redacted provider use <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
   redacted provider use openai
   redacted provider use openai/privacy-filter-v1
   redacted provider use ollama
-  redacted provider use ollama/gpt-oss-v1
+  redacted provider use ollama --runtime-model qwen3-coder:30b
+  redacted provider use ollama/structured-v1 --runtime-model qwen3-coder:30b
 
 NOTE:
   `use` does not download anything. Use `enable` for easy onboarding or
   `install` first if you want a separate install step.
+  `--runtime-model` updates the saved local Ollama model for Ollama targets.
   The `ollama` target is experimental and lower-fidelity than the supported
   OpenAI token-span path."#
         }
@@ -346,7 +365,7 @@ EXAMPLES:
   redacted provider verify openai
   redacted provider verify openai/privacy-filter-v1
   redacted provider verify ollama
-  redacted provider verify ollama/gpt-oss-v1
+  redacted provider verify ollama/structured-v1
   redacted provider verify --all
 
 DEFAULT:
@@ -624,15 +643,30 @@ fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
     }
 
     let command = match first {
-        "enable" => ProviderSubcommand::Enable {
-            selector: require_subcommand_selector(args, 1, "enable")?,
-        },
-        "install" => ProviderSubcommand::Install {
-            selector: require_subcommand_selector(args, 1, "install")?,
-        },
-        "use" => ProviderSubcommand::Use {
-            selector: require_subcommand_selector(args, 1, "use")?,
-        },
+        "enable" => {
+            let (selector, runtime_model) =
+                parse_provider_selector_with_runtime_model(args, "enable")?;
+            ProviderSubcommand::Enable {
+                selector,
+                runtime_model,
+            }
+        }
+        "install" => {
+            let (selector, runtime_model) =
+                parse_provider_selector_with_runtime_model(args, "install")?;
+            ProviderSubcommand::Install {
+                selector,
+                runtime_model,
+            }
+        }
+        "use" => {
+            let (selector, runtime_model) =
+                parse_provider_selector_with_runtime_model(args, "use")?;
+            ProviderSubcommand::Use {
+                selector,
+                runtime_model,
+            }
+        }
         "current" => {
             reject_extra_args(args, 1, "current")?;
             ProviderSubcommand::Current
@@ -701,20 +735,44 @@ fn provider_topic_from_name(name: &str) -> Result<ProviderHelpTopic> {
     }
 }
 
-fn require_subcommand_selector(args: &[String], index: usize, command: &str) -> Result<String> {
-    if index >= args.len() {
+fn parse_provider_selector_with_runtime_model(
+    args: &[String],
+    command: &str,
+) -> Result<(String, Option<String>)> {
+    if args.len() < 2 {
         return Err(RedactError::Usage(format!(
             "Provider command '{}' requires <provider-or-target>.\n  redacted provider {} openai",
             command, command
         )));
     }
-    if args.len() > index + 1 {
-        return Err(RedactError::Usage(format!(
-            "Provider command '{}' accepts a single <provider-or-target>.\n  redacted provider {} openai",
-            command, command
-        )));
+
+    let selector = args[1].clone();
+    let mut runtime_model = None;
+    let mut index = 2;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--runtime-model" => {
+                index += 1;
+                if runtime_model.is_some() {
+                    return Err(RedactError::Usage(format!(
+                        "Provider command '{}' accepts a single --runtime-model value.\n  redacted provider {} ollama --runtime-model qwen3-coder:30b",
+                        command, command
+                    )));
+                }
+                runtime_model = Some(require_value(args, index, "--runtime-model")?);
+            }
+            other => {
+                return Err(RedactError::Usage(format!(
+                    "Unknown provider argument '{}'\n  redacted provider {} ollama --runtime-model qwen3-coder:30b",
+                    other, command
+                )));
+            }
+        }
+        index += 1;
     }
-    Ok(args[index].clone())
+
+    Ok((selector, runtime_model))
 }
 
 fn reject_extra_args(args: &[String], allowed_len: usize, command: &str) -> Result<()> {
@@ -880,6 +938,29 @@ mod tests {
                 help: None,
                 command: Some(ProviderSubcommand::Enable {
                     selector: "openai".into(),
+                    runtime_model: None,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_enable_ollama_runtime_model() {
+        let cli = parse_args_from(&args(&[
+            "provider",
+            "enable",
+            "ollama",
+            "--runtime-model",
+            "qwen3-coder:30b",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: None,
+                command: Some(ProviderSubcommand::Enable {
+                    selector: "ollama".into(),
+                    runtime_model: Some("qwen3-coder:30b".into()),
                 }),
             })
         );

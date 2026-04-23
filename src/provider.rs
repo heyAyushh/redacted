@@ -25,7 +25,8 @@ const OPENAI_PROVIDER_ALIAS: &str = "openai";
 const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
 const OLLAMA_PROVIDER_ALIAS: &str = "ollama";
-const OLLAMA_PRIVACY_TARGET: &str = "ollama/gpt-oss-v1";
+const OLLAMA_PRIVACY_TARGET: &str = "ollama/structured-v1";
+const OLLAMA_LEGACY_TARGET: &str = "ollama/gpt-oss-v1";
 const OLLAMA_RUNNER_SCRIPT_NAME: &str = "ollama_privacy_runner.py";
 const OLLAMA_RUNTIME_STATE_FILE: &str = "ollama-runtime.state";
 const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
@@ -33,7 +34,6 @@ const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
 const REDACTED_OLLAMA_BASE_URL_OVERRIDE: &str = "REDACTED_OLLAMA_BASE_URL";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/api";
-const DEFAULT_OLLAMA_MODEL_NAME: &str = "gpt-oss";
 const HTTP_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,11 +97,11 @@ struct ProviderCatalogEntry {
     provider: &'static str,
     model: &'static str,
     aliases: &'static [&'static str],
+    legacy_targets: &'static [&'static str],
     adapter: ProviderAdapterKind,
     package: Option<ArtifactSpec>,
     model_artifacts: &'static [ArtifactSpec],
     labels: &'static [LabelMapping],
-    runtime_model_name: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -248,23 +248,23 @@ const OPENAI_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     provider: "openai",
     model: "privacy-filter-v1",
     aliases: &[OPENAI_PROVIDER_ALIAS],
+    legacy_targets: &[],
     adapter: ProviderAdapterKind::OpenAiOpfLocal,
     package: Some(OPENAI_PACKAGE_ARTIFACT),
     model_artifacts: &OPENAI_MODEL_ARTIFACTS,
     labels: &OPENAI_LABEL_MAPPINGS,
-    runtime_model_name: None,
 };
 
 const OLLAMA_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     target: OLLAMA_PRIVACY_TARGET,
     provider: "ollama",
-    model: "gpt-oss-v1",
+    model: "structured-v1",
     aliases: &[OLLAMA_PROVIDER_ALIAS],
+    legacy_targets: &[OLLAMA_LEGACY_TARGET],
     adapter: ProviderAdapterKind::OllamaLocalApi,
     package: None,
     model_artifacts: &[],
     labels: &OPENAI_LABEL_MAPPINGS,
-    runtime_model_name: Some(DEFAULT_OLLAMA_MODEL_NAME),
 };
 
 const PROVIDER_CATALOG: [ProviderCatalogEntry; 2] = [OPENAI_PROVIDER_ENTRY, OLLAMA_PROVIDER_ENTRY];
@@ -531,31 +531,43 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
     }
 
     match args.command.as_ref() {
-        Some(ProviderSubcommand::Enable { selector }) => {
+        Some(ProviderSubcommand::Enable {
+            selector,
+            runtime_model,
+        }) => {
             let entry = resolve_catalog_entry(selector)?;
             let bundle = bundle_root_for_entry(entry)?;
             let installed_now = if is_bundle_installed(entry, &bundle)? {
+                if let Some(model_name) = runtime_model.as_deref() {
+                    apply_runtime_model_override(entry, &bundle, model_name, true)?;
+                }
                 if !has_verified_state(&bundle)? {
                     verify_bundle(entry, &bundle)?;
                 }
                 false
             } else {
-                install_target(entry)?.installed_now
+                install_target(entry, runtime_model.as_deref())?.installed_now
             };
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
-            let message = format!(
+            let mut message = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\nactive: yes\npath: {}\n",
                 entry.target,
                 if installed_now { "yes" } else { "already" },
                 bundle.display()
             );
+            if let Some(model_name) = current_runtime_model(entry, &bundle)? {
+                message.push_str(&format!("runtime model: {}\n", model_name));
+            }
             io_safe::write_stdout(&message)?;
         }
-        Some(ProviderSubcommand::Install { selector }) => {
+        Some(ProviderSubcommand::Install {
+            selector,
+            runtime_model,
+        }) => {
             let entry = resolve_catalog_entry(selector)?;
-            let outcome = install_target(entry)?;
-            let message = format!(
+            let outcome = install_target(entry, runtime_model.as_deref())?;
+            let mut message = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
                 entry.target,
                 if outcome.installed_now {
@@ -565,31 +577,49 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 },
                 outcome.bundle_root.display()
             );
+            if let Some(model_name) = current_runtime_model(entry, &outcome.bundle_root)? {
+                message.push_str(&format!("runtime model: {}\n", model_name));
+            }
             io_safe::write_stdout(&message)?;
         }
-        Some(ProviderSubcommand::Use { selector }) => {
+        Some(ProviderSubcommand::Use {
+            selector,
+            runtime_model,
+        }) => {
             let entry = resolve_catalog_entry(selector)?;
             let bundle = bundle_root_for_entry(entry)?;
+            if let Some(model_name) = runtime_model.as_deref() {
+                apply_runtime_model_override(entry, &bundle, model_name, false)?;
+            }
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
-            let message = format!(
+            let mut message = format!(
                 "resolved target: {}\nactive: yes\npath: {}\n",
                 entry.target,
                 bundle.display()
             );
+            if let Some(model_name) = current_runtime_model(entry, &bundle)? {
+                message.push_str(&format!("runtime model: {}\n", model_name));
+            }
             io_safe::write_stdout(&message)?;
         }
         Some(ProviderSubcommand::Current) => {
             if let Some(state) = load_active_provider_state()? {
                 let message = if let Some(entry) = find_catalog_entry_by_target(&state.target) {
-                    format!(
+                    let bundle = bundle_root_for_entry(entry)?;
+                    let runtime_model = current_runtime_model(entry, &bundle)?;
+                    let mut message = format!(
                         "active target: {}\nadapter: {}\nmode: {}\nsupport: {}\ntrust: {}\n",
                         state.target,
                         entry.adapter.display_name(),
                         entry.adapter.detection_mode(),
                         entry.adapter.support_tier(),
                         entry.adapter.trust_level()
-                    )
+                    );
+                    if let Some(model_name) = runtime_model {
+                        message.push_str(&format!("runtime model: {}\n", model_name));
+                    }
+                    message
                 } else {
                     format!("active target: {}\n", state.target)
                 };
@@ -643,11 +673,14 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 };
                 let bundle = bundle_root_for_entry(entry)?;
                 verify_bundle(entry, &bundle)?;
-                let message = format!(
+                let mut message = format!(
                     "verified target: {}\npath: {}\n",
                     entry.target,
                     bundle.display()
                 );
+                if let Some(model_name) = current_runtime_model(entry, &bundle)? {
+                    message.push_str(&format!("runtime model: {}\n", model_name));
+                }
                 io_safe::write_stdout(&message)?;
             }
         }
@@ -866,10 +899,15 @@ fn format_provider_list() -> Result<String> {
         };
         let active = active_target
             .as_ref()
-            .map(|target| target == entry.target)
+            .map(|target| entry.target == target || entry.legacy_targets.contains(&target.as_str()))
             .unwrap_or(false);
+        let runtime_model = if installed {
+            current_runtime_model(entry, &bundle)?
+        } else {
+            None
+        };
         output.push_str(&format!(
-            "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}\n",
+            "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}",
             entry.target,
             entry.adapter.display_name(),
             entry.adapter.detection_mode(),
@@ -879,13 +917,29 @@ fn format_provider_list() -> Result<String> {
             yes_or_no(verified),
             yes_or_no(active),
         ));
+        if let Some(model_name) = runtime_model {
+            output.push_str(&format!("  runtime_model={}", model_name));
+        }
+        output.push('\n');
     }
     Ok(output)
 }
 
-fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome> {
+fn install_target(
+    entry: &'static ProviderCatalogEntry,
+    runtime_model: Option<&str>,
+) -> Result<InstallOutcome> {
+    if runtime_model.is_some() && entry.adapter != ProviderAdapterKind::OllamaLocalApi {
+        return Err(RedactError::Usage(format!(
+            "Provider '{}' does not accept --runtime-model.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b",
+            entry.target
+        )));
+    }
     let bundle_root = bundle_root_for_entry(entry)?;
     if is_bundle_installed(entry, &bundle_root)? {
+        if let Some(model_name) = runtime_model {
+            apply_runtime_model_override(entry, &bundle_root, model_name, true)?;
+        }
         if !has_verified_state(&bundle_root)? {
             verify_bundle(entry, &bundle_root)?;
         }
@@ -923,7 +977,9 @@ fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome
 
     let install_result = match entry.adapter {
         ProviderAdapterKind::OpenAiOpfLocal => install_openai_bundle(entry, &temp_bundle),
-        ProviderAdapterKind::OllamaLocalApi => install_ollama_bundle(entry, &temp_bundle),
+        ProviderAdapterKind::OllamaLocalApi => {
+            install_ollama_bundle(entry, &temp_bundle, runtime_model)
+        }
     };
 
     if let Err(error) = install_result {
@@ -974,7 +1030,7 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
     }
     let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
     if manifest.schema_version != PROVIDER_SCHEMA_VERSION
-        || manifest.target != entry.target
+        || !manifest_matches_entry(&manifest, entry)
         || manifest.adapter != entry.adapter.manifest_name()
     {
         return Err(RedactError::Config(format!(
@@ -1076,15 +1132,14 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
     Ok(())
 }
 
-fn install_ollama_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
-    let model_name = entry.runtime_model_name.ok_or_else(|| {
-        RedactError::Config(format!(
-            "Provider '{}' is missing Ollama model metadata.",
-            entry.target
-        ))
-    })?;
+fn install_ollama_bundle(
+    entry: &ProviderCatalogEntry,
+    temp_bundle: &Path,
+    requested_runtime_model: Option<&str>,
+) -> Result<()> {
     let base_url = ollama_base_url();
-    ensure_ollama_model_available(&base_url, model_name, true)?;
+    let model_name = resolve_ollama_runtime_model(&base_url, requested_runtime_model, None, true)?;
+    ensure_ollama_model_available(&base_url, &model_name, true)?;
 
     let runtime_dir = temp_bundle.join(PROVIDER_RUNTIME_DIR);
     fs::create_dir_all(&runtime_dir).map_err(|error| {
@@ -1098,7 +1153,7 @@ fn install_ollama_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
         &runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE),
         &OllamaRuntimeState {
             base_url,
-            model_name: model_name.into(),
+            model_name,
         },
     )?;
 
@@ -1178,7 +1233,9 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
         )));
     }
     let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
-    if manifest.target != entry.target || manifest.adapter != entry.adapter.manifest_name() {
+    if !manifest_matches_entry(&manifest, entry)
+        || manifest.adapter != entry.adapter.manifest_name()
+    {
         return Err(RedactError::Config(format!(
             "Provider bundle at '{}' does not match target '{}'.",
             bundle_root.display(),
@@ -1447,7 +1504,11 @@ fn is_bundle_installed(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
         return Ok(false);
     }
     let manifest = load_bundle_manifest(&manifest_path)?;
-    Ok(manifest.target == entry.target)
+    Ok(manifest_matches_entry(&manifest, entry))
+}
+
+fn manifest_matches_entry(manifest: &BundleManifest, entry: &'static ProviderCatalogEntry) -> bool {
+    manifest.target == entry.target || entry.legacy_targets.contains(&manifest.target.as_str())
 }
 
 fn has_verified_state(bundle_root: &Path) -> Result<bool> {
@@ -1751,7 +1812,9 @@ fn resolve_catalog_entry(selector: &str) -> Result<&'static ProviderCatalogEntry
 }
 
 fn find_catalog_entry_by_target(target: &str) -> Option<&'static ProviderCatalogEntry> {
-    PROVIDER_CATALOG.iter().find(|entry| entry.target == target)
+    PROVIDER_CATALOG
+        .iter()
+        .find(|entry| entry.target == target || entry.legacy_targets.contains(&target))
 }
 
 fn default_venv_python_rel() -> &'static str {
@@ -1895,6 +1958,100 @@ fn verify_ollama_runtime_bundle(bundle_root: &Path) -> Result<()> {
     ensure_ollama_model_available(&state.base_url, &state.model_name, false)
 }
 
+fn current_runtime_model(
+    entry: &'static ProviderCatalogEntry,
+    bundle_root: &Path,
+) -> Result<Option<String>> {
+    if entry.adapter != ProviderAdapterKind::OllamaLocalApi || !bundle_root.exists() {
+        return Ok(None);
+    }
+    let state = load_ollama_runtime_state(bundle_root)?;
+    Ok(Some(state.model_name))
+}
+
+fn apply_runtime_model_override(
+    entry: &'static ProviderCatalogEntry,
+    bundle_root: &Path,
+    runtime_model: &str,
+    allow_pull: bool,
+) -> Result<()> {
+    if entry.adapter != ProviderAdapterKind::OllamaLocalApi {
+        return Err(RedactError::Usage(format!(
+            "Provider '{}' does not accept --runtime-model.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b",
+            entry.target
+        )));
+    }
+    if !is_bundle_installed(entry, bundle_root)? {
+        return Err(RedactError::Usage(format!(
+            "Provider bundle '{}' is not installed.\n  redacted provider install {}",
+            entry.target, entry.target
+        )));
+    }
+    let runtime_dir = bundle_root.join(PROVIDER_RUNTIME_DIR);
+    fs::create_dir_all(&runtime_dir).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create Ollama runtime directory '{}': {}",
+            runtime_dir.display(),
+            error
+        ))
+    })?;
+    let base_url = if runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE).is_file() {
+        load_ollama_runtime_state(bundle_root)?.base_url
+    } else {
+        ollama_base_url()
+    };
+    ensure_ollama_model_available(&base_url, runtime_model, allow_pull)?;
+    save_ollama_runtime_state(
+        &runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE),
+        &OllamaRuntimeState {
+            base_url,
+            model_name: runtime_model.to_string(),
+        },
+    )?;
+    save_verified_state(
+        bundle_root,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn resolve_ollama_runtime_model(
+    base_url: &str,
+    requested_runtime_model: Option<&str>,
+    existing_runtime_state: Option<&OllamaRuntimeState>,
+    allow_infer_single_model: bool,
+) -> Result<String> {
+    if let Some(model_name) = requested_runtime_model {
+        return Ok(model_name.to_string());
+    }
+    if let Some(state) = existing_runtime_state {
+        return Ok(state.model_name.clone());
+    }
+    if !allow_infer_single_model {
+        return Err(RedactError::Usage(
+            "Ollama requires --runtime-model when no saved local model is configured.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b".into(),
+        ));
+    }
+    let installed_models = list_ollama_models(base_url)?;
+    if installed_models.len() == 1 {
+        return Ok(installed_models.into_iter().next().unwrap());
+    }
+    if installed_models.is_empty() {
+        return Err(RedactError::Usage(
+            "No local Ollama models are available.\nInstall one first, then run:\n  redacted provider enable ollama --runtime-model qwen3-coder:30b".into(),
+        ));
+    }
+    Err(RedactError::Usage(format!(
+        "Multiple local Ollama models are available at {}.\nChoose one with:\n  redacted provider enable ollama --runtime-model <MODEL>\nInstalled models: {}",
+        base_url,
+        installed_models.join(", ")
+    )))
+}
+
 fn ensure_ollama_model_available(
     base_url: &str,
     model_name: &str,
@@ -1905,8 +2062,8 @@ fn ensure_ollama_model_available(
     }
     if !pull_if_missing {
         return Err(RedactError::Usage(format!(
-            "Ollama model '{}' is not available at {}.\nStart Ollama locally and install it, then run:\n  redacted provider enable ollama",
-            model_name, base_url
+            "Ollama model '{}' is not available at {}.\nStart Ollama locally and install it, then run:\n  redacted provider enable ollama --runtime-model {}",
+            model_name, base_url, model_name
         )));
     }
     pull_ollama_model(base_url, model_name)?;
@@ -1920,6 +2077,12 @@ fn ensure_ollama_model_available(
 }
 
 fn ollama_model_available(base_url: &str, model_name: &str) -> Result<bool> {
+    Ok(list_ollama_models(base_url)?
+        .iter()
+        .any(|installed| ollama_model_name_matches(installed, model_name)))
+}
+
+fn list_ollama_models(base_url: &str) -> Result<Vec<String>> {
     let tags_url = join_url_path(base_url, "tags");
     let response_body = http_request_json("GET", &tags_url, None)?;
     let value = JsonParser::new(&response_body).parse().map_err(|message| {
@@ -1934,22 +2097,21 @@ fn ollama_model_available(base_url: &str, model_name: &str) -> Result<bool> {
         .ok_or_else(|| RedactError::Config("Ollama tags response is missing models.".into()))?;
     Ok(models
         .iter()
-        .any(|model| ollama_model_matches(model, model_name)))
+        .filter_map(ollama_model_name_from_value)
+        .collect())
 }
 
-fn ollama_model_matches(value: &JsonValue, model_name: &str) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    let candidates = ["name", "model"]
+fn ollama_model_name_from_value(value: &JsonValue) -> Option<String> {
+    let object = value.as_object()?;
+    ["name", "model"]
         .iter()
-        .filter_map(|key| object.get(*key).and_then(JsonValue::as_str));
-    for candidate in candidates {
-        if candidate == model_name || candidate.starts_with(&format!("{}:", model_name)) {
-            return true;
-        }
-    }
-    false
+        .find_map(|key| object.get(*key).and_then(JsonValue::as_str))
+        .map(str::to_string)
+}
+
+fn ollama_model_name_matches(installed_model: &str, requested_model: &str) -> bool {
+    installed_model == requested_model
+        || installed_model.starts_with(&format!("{}:", requested_model))
 }
 
 fn pull_ollama_model(base_url: &str, model_name: &str) -> Result<()> {

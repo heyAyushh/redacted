@@ -156,7 +156,12 @@ impl FakeOllamaServer {
             while !stop_flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let _ = handle_fake_ollama_connection(&mut stream, &model_state);
+                        let model_state = Arc::clone(&model_state);
+                        thread::spawn(move || {
+                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                            let _ = handle_fake_ollama_connection(&mut stream, &model_state);
+                        });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(20));
@@ -192,7 +197,11 @@ fn handle_fake_ollama_connection(
     stream: &mut TcpStream,
     model_state: &Arc<Mutex<Vec<String>>>,
 ) -> std::io::Result<()> {
-    let request = read_http_request(stream)?;
+    let request = match read_http_request(stream) {
+        Ok(request) => request,
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let mut parts = request
         .header
         .lines()
@@ -305,7 +314,7 @@ fn fake_ollama_generate_response(request_body: &str) -> String {
     }
     let payload = format!("{{\"spans\":[{}]}}", spans.join(","));
     format!(
-        "{{\"model\":\"gpt-oss\",\"response\":{},\"done\":true}}",
+        "{{\"model\":\"qwen3-coder:30b\",\"response\":{},\"done\":true}}",
         json_string(&payload)
     )
 }
@@ -495,18 +504,19 @@ fn provider_enable_alias_reuses_verified_bundle() {
 #[test]
 fn provider_enable_ollama_alias_installs_and_activates() {
     let (_config_root, data_root, mut envs) = provider_env("provider_enable_ollama");
-    let server = FakeOllamaServer::start(&[]);
+    let server = FakeOllamaServer::start(&["qwen3-coder:30b"]);
     envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
 
     let (stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
-    assert!(stdout.contains("resolved target: ollama/gpt-oss-v1"));
+    assert!(stdout.contains("resolved target: ollama/structured-v1"));
     assert!(stdout.contains("active: yes"));
+    assert!(stdout.contains("runtime model: qwen3-coder:30b"));
 
     let bundle_root = data_root
         .join("providers")
         .join("ollama")
-        .join("gpt-oss-v1");
+        .join("structured-v1");
     assert!(bundle_root.join("bundle.state").exists());
     assert!(bundle_root
         .join("runtime")
@@ -520,6 +530,19 @@ fn provider_enable_ollama_alias_installs_and_activates() {
 
 #[cfg(unix)]
 #[test]
+fn provider_enable_ollama_requires_runtime_model_when_multiple_exist() {
+    let (_config_root, _data_root, mut envs) = provider_env("provider_enable_ollama_many");
+    let server = FakeOllamaServer::start(&["qwen3-coder:30b", "llama3.2:latest"]);
+    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
+
+    let (_stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
+    assert_eq!(code, 2, "stderr: {}", stderr);
+    assert!(stderr.contains("Multiple local Ollama models are available"));
+    assert!(stderr.contains("--runtime-model"));
+}
+
+#[cfg(unix)]
+#[test]
 fn provider_list_shows_aliases_and_install_state() {
     let (config_root, data_root, envs) = provider_env("provider_list");
     install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
@@ -528,7 +551,7 @@ fn provider_list_shows_aliases_and_install_state() {
     assert_eq!(code, 0);
     assert!(stdout.contains("Aliases:"));
     assert!(stdout.contains("openai -> openai/privacy-filter-v1"));
-    assert!(stdout.contains("ollama -> ollama/gpt-oss-v1"));
+    assert!(stdout.contains("ollama -> ollama/structured-v1"));
     assert!(stdout.contains("support=supported"));
     assert!(stdout.contains("mode=token-span"));
     assert!(stdout.contains("support=experimental"));
@@ -636,7 +659,7 @@ fn privacy_filter_reports_invalid_runner_json() {
 #[test]
 fn privacy_filter_works_with_ollama_provider() {
     let (_config_root, _data_root, mut envs) = provider_env("privacy_ollama_provider");
-    let server = FakeOllamaServer::start(&["gpt-oss"]);
+    let server = FakeOllamaServer::start(&["qwen3-coder:30b"]);
     envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
 
     let (_stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
