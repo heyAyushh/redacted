@@ -461,6 +461,7 @@ fn provider_enable_help_flag() {
     let (_, stderr, code) = run(&["provider", "enable", "--help"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("redacted provider enable"));
+    assert!(stderr.contains("apple/foundation-v1"));
     assert!(stderr.contains("openai/privacy-filter-v1"));
 }
 
@@ -471,6 +472,7 @@ fn provider_current_without_active_shows_onboarding() {
     let (stdout, _, code) = run_with_env(&["provider", "current"], &envs);
     assert_eq!(code, 0);
     assert!(stdout.contains("No active provider configured"));
+    assert!(stdout.contains("redacted provider enable apple"));
     assert!(stdout.contains("redacted provider enable openai"));
 }
 
@@ -550,10 +552,12 @@ fn provider_list_shows_aliases_and_install_state() {
     let (stdout, _, code) = run_with_env(&["provider", "list"], &envs);
     assert_eq!(code, 0);
     assert!(stdout.contains("Aliases:"));
+    assert!(stdout.contains("apple -> apple/foundation-v1"));
     assert!(stdout.contains("openai -> openai/privacy-filter-v1"));
     assert!(stdout.contains("ollama -> ollama/structured-v1"));
     assert!(stdout.contains("support=supported"));
     assert!(stdout.contains("mode=token-span"));
+    assert!(stdout.contains("mode=structured-extraction"));
     assert!(stdout.contains("support=experimental"));
     assert!(stdout.contains("mode=generative-extraction"));
     assert!(stdout.contains("installed=yes"));
@@ -596,6 +600,7 @@ fn privacy_filter_requires_active_provider() {
     );
     assert_eq!(code, 2);
     assert!(stderr.contains("No active privacy-filter provider is configured"));
+    assert!(stderr.contains("redacted provider enable apple"));
     assert!(stderr.contains("redacted provider enable openai"));
 }
 

@@ -21,6 +21,9 @@ const PROVIDER_BUNDLES_DIR: &str = "providers";
 const PROVIDER_RUNNER_DIR: &str = "runner";
 const PROVIDER_MODEL_DIR: &str = "model";
 const PROVIDER_RUNTIME_DIR: &str = "runtime";
+const APPLE_PROVIDER_ALIAS: &str = "apple";
+const APPLE_FOUNDATION_TARGET: &str = "apple/foundation-v1";
+const APPLE_RUNNER_BINARY_NAME: &str = "apple_foundation_runner";
 const OPENAI_PROVIDER_ALIAS: &str = "openai";
 const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
@@ -32,12 +35,14 @@ const OLLAMA_RUNTIME_STATE_FILE: &str = "ollama-runtime.state";
 const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
 const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
+const REDACTED_PROVIDER_SWIFTC_OVERRIDE: &str = "REDACTED_PROVIDER_SWIFTC";
 const REDACTED_OLLAMA_BASE_URL_OVERRIDE: &str = "REDACTED_OLLAMA_BASE_URL";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/api";
 const HTTP_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderAdapterKind {
+    AppleFoundationLocal,
     OpenAiOpfLocal,
     OllamaLocalApi,
 }
@@ -45,6 +50,7 @@ enum ProviderAdapterKind {
 impl ProviderAdapterKind {
     fn manifest_name(self) -> &'static str {
         match self {
+            Self::AppleFoundationLocal => "apple-foundation-local",
             Self::OpenAiOpfLocal => "openai-opf-local",
             Self::OllamaLocalApi => "ollama-local-api",
         }
@@ -56,6 +62,7 @@ impl ProviderAdapterKind {
 
     fn trust_level(self) -> &'static str {
         match self {
+            Self::AppleFoundationLocal => "optional-system",
             Self::OpenAiOpfLocal => "optional-external",
             Self::OllamaLocalApi => "optional-service",
         }
@@ -63,6 +70,7 @@ impl ProviderAdapterKind {
 
     fn support_tier(self) -> &'static str {
         match self {
+            Self::AppleFoundationLocal => "supported",
             Self::OpenAiOpfLocal => "supported",
             Self::OllamaLocalApi => "experimental",
         }
@@ -70,6 +78,7 @@ impl ProviderAdapterKind {
 
     fn detection_mode(self) -> &'static str {
         match self {
+            Self::AppleFoundationLocal => "structured-extraction",
             Self::OpenAiOpfLocal => "token-span",
             Self::OllamaLocalApi => "generative-extraction",
         }
@@ -209,6 +218,21 @@ const OPENAI_LABEL_MAPPINGS: [LabelMapping; 8] = [
     },
 ];
 
+const APPLE_FOUNDATION_RUNNER_SOURCE: &str =
+    include_str!("../assets/providers/apple_foundation_runner.swift");
+
+const APPLE_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
+    target: APPLE_FOUNDATION_TARGET,
+    provider: "apple",
+    model: "foundation-v1",
+    aliases: &[APPLE_PROVIDER_ALIAS],
+    legacy_targets: &[],
+    adapter: ProviderAdapterKind::AppleFoundationLocal,
+    package: None,
+    model_artifacts: &[],
+    labels: &OPENAI_LABEL_MAPPINGS,
+};
+
 const OPENAI_PACKAGE_ARTIFACT: ArtifactSpec = ArtifactSpec {
     bundle_rel: "downloads/opf-source.tar.gz",
     url: "https://github.com/openai/privacy-filter/archive/2e8c95b9771eec29ef61012f6e5e836f9bad7635.tar.gz",
@@ -267,7 +291,11 @@ const OLLAMA_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     labels: &OPENAI_LABEL_MAPPINGS,
 };
 
-const PROVIDER_CATALOG: [ProviderCatalogEntry; 2] = [OPENAI_PROVIDER_ENTRY, OLLAMA_PROVIDER_ENTRY];
+const PROVIDER_CATALOG: [ProviderCatalogEntry; 3] = [
+    APPLE_PROVIDER_ENTRY,
+    OPENAI_PROVIDER_ENTRY,
+    OLLAMA_PROVIDER_ENTRY,
+];
 
 const OPENAI_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import argparse
@@ -626,7 +654,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 io_safe::write_stdout(&message)?;
             } else {
                 io_safe::write_stdout(
-                    "No active provider configured.\nSet one up with:\n  redacted provider enable openai\n",
+                    "No active provider configured.\nSet one up with:\n  redacted provider enable apple\n  redacted provider enable openai\n",
                 )?;
             }
         }
@@ -660,7 +688,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                     None => {
                         let active = load_active_provider_state()?.ok_or_else(|| {
                             RedactError::Usage(
-                                "No active provider is configured.\n  redacted provider enable openai".into(),
+                                "No active provider is configured.\n  redacted provider enable apple\n  redacted provider enable openai".into(),
                             )
                         })?;
                         find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -704,7 +732,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
 pub fn start_active_session() -> Result<ProviderSession> {
     let active = load_active_provider_state()?.ok_or_else(|| {
         RedactError::Usage(
-            "No active privacy-filter provider is configured.\n  redacted provider enable openai\n  redacted provider list".into(),
+            "No active privacy-filter provider is configured.\n  redacted provider enable apple\n  redacted provider enable openai\n  redacted provider list".into(),
         )
     })?;
     let entry = find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -976,6 +1004,7 @@ fn install_target(
     })?;
 
     let install_result = match entry.adapter {
+        ProviderAdapterKind::AppleFoundationLocal => install_apple_bundle(entry, &temp_bundle),
         ProviderAdapterKind::OpenAiOpfLocal => install_openai_bundle(entry, &temp_bundle),
         ProviderAdapterKind::OllamaLocalApi => {
             install_ollama_bundle(entry, &temp_bundle, runtime_model)
@@ -1072,6 +1101,58 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
     }
     save_verified_state(
         bundle_root,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn install_apple_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
+    let runtime_dir = temp_bundle.join(PROVIDER_RUNTIME_DIR);
+    fs::create_dir_all(&runtime_dir).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create Apple runtime directory '{}': {}",
+            runtime_dir.display(),
+            error
+        ))
+    })?;
+
+    let runner_dir = temp_bundle.join(PROVIDER_RUNNER_DIR);
+    fs::create_dir_all(&runner_dir).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create Apple runner directory '{}': {}",
+            runner_dir.display(),
+            error
+        ))
+    })?;
+
+    let source_path = runner_dir.join("apple_foundation_runner.swift");
+    io_safe::atomic_write(&source_path, APPLE_FOUNDATION_RUNNER_SOURCE)?;
+
+    let runner_path = runner_dir.join(APPLE_RUNNER_BINARY_NAME);
+    compile_apple_foundation_runner(&source_path, &runner_path)?;
+    let runner_sha256 = sha256_hex_of_path(&runner_path)?;
+
+    let manifest = BundleManifest {
+        schema_version: PROVIDER_SCHEMA_VERSION,
+        target: entry.target.to_string(),
+        provider: entry.provider.to_string(),
+        model: entry.model.to_string(),
+        adapter: entry.adapter.manifest_name().into(),
+        runner_rel: Path::new(PROVIDER_RUNNER_DIR)
+            .join(APPLE_RUNNER_BINARY_NAME)
+            .to_string_lossy()
+            .into_owned(),
+        entry_rel: None,
+        checkpoint_rel: PROVIDER_RUNTIME_DIR.into(),
+        runner_sha256,
+    };
+    save_bundle_manifest(temp_bundle, &manifest)?;
+    save_verified_state(
+        temp_bundle,
         &VerifiedState {
             schema_version: PROVIDER_SCHEMA_VERSION,
             target: entry.target.into(),
@@ -1270,6 +1351,9 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
     }
     if entry.adapter == ProviderAdapterKind::OllamaLocalApi {
         verify_ollama_runtime_bundle(bundle_root)?;
+    }
+    if entry.adapter == ProviderAdapterKind::AppleFoundationLocal {
+        verify_apple_foundation_runtime(bundle_root)?;
     }
     Ok(())
 }
@@ -1874,6 +1958,30 @@ fn write_openai_runner_script(path: &Path) -> Result<()> {
     io_safe::atomic_write(path, OPENAI_RUNNER_SCRIPT)
 }
 
+fn compile_apple_foundation_runner(source_path: &Path, output_path: &Path) -> Result<()> {
+    let swiftc = system_swiftc_command();
+    let output = Command::new(&swiftc)
+        .arg("-parse-as-library")
+        .arg("-O")
+        .arg(source_path)
+        .arg("-o")
+        .arg(output_path)
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to start Apple Foundation runner build with '{}': {}",
+                swiftc, error
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Apple Foundation runner build failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    make_executable_if_supported(output_path)
+}
+
 fn write_ollama_runner_script(path: &Path) -> Result<()> {
     io_safe::atomic_write(path, OLLAMA_RUNNER_SCRIPT)?;
     make_executable_if_supported(path)
@@ -1881,6 +1989,10 @@ fn write_ollama_runner_script(path: &Path) -> Result<()> {
 
 fn system_python_command() -> String {
     std::env::var(REDACTED_PROVIDER_PYTHON_OVERRIDE).unwrap_or_else(|_| "python3".into())
+}
+
+fn system_swiftc_command() -> String {
+    std::env::var(REDACTED_PROVIDER_SWIFTC_OVERRIDE).unwrap_or_else(|_| "swiftc".into())
 }
 
 fn ollama_base_url() -> String {
@@ -1956,6 +2068,45 @@ with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as ha
 fn verify_ollama_runtime_bundle(bundle_root: &Path) -> Result<()> {
     let state = load_ollama_runtime_state(bundle_root)?;
     ensure_ollama_model_available(&state.base_url, &state.model_name, false)
+}
+
+fn verify_apple_foundation_runtime(bundle_root: &Path) -> Result<()> {
+    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    let runner_path = bundle_root.join(&manifest.runner_rel);
+    let output = Command::new(&runner_path)
+        .arg("--availability-check")
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to query Apple Foundation availability with '{}': {}",
+                runner_path.display(),
+                error
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Apple Foundation runner availability check failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    match status.as_str() {
+        "available" => Ok(()),
+        "unavailable:apple_intelligence_not_enabled" => Err(RedactError::Usage(
+            "Apple Foundation Models is installed but Apple Intelligence is not enabled on this Mac.\nEnable Apple Intelligence, then run:\n  redacted provider use apple".into(),
+        )),
+        "unavailable:model_not_ready" => Err(RedactError::Usage(
+            "Apple Foundation Models is installed but the on-device system model is still downloading or preparing.\nWait for the model to finish, then run:\n  redacted provider use apple".into(),
+        )),
+        "unavailable:device_not_eligible" => Err(RedactError::Usage(
+            "Apple Foundation Models requires a Mac that supports Apple Intelligence.\nUse another provider on this machine, for example:\n  redacted provider enable openai".into(),
+        )),
+        other => Err(RedactError::Usage(format!(
+            "Apple Foundation Models is not ready on this Mac: {}\nUse another provider or retry after the system model becomes available.",
+            other
+        ))),
+    }
 }
 
 fn current_runtime_model(
@@ -2771,6 +2922,12 @@ mod tests {
     fn resolve_openai_alias_to_default_target() {
         let entry = resolve_catalog_entry("openai").unwrap();
         assert_eq!(entry.target, OPENAI_PRIVACY_TARGET);
+    }
+
+    #[test]
+    fn resolve_apple_alias_to_default_target() {
+        let entry = resolve_catalog_entry("apple").unwrap();
+        assert_eq!(entry.target, APPLE_FOUNDATION_TARGET);
     }
 
     #[test]

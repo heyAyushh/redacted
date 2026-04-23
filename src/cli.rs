@@ -167,6 +167,7 @@ USAGE:
   redacted --text "email me at user@example.com"
   redacted --input secrets.txt
   redacted --input logs/ --output cleaned/
+  redacted provider enable apple
   redacted provider enable openai
   redacted provider enable ollama --runtime-model qwen3-coder:30b
 
@@ -237,6 +238,7 @@ EXAMPLES:
   redacted --text "user@example.com" --retain-detector EMAIL
   redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
   redacted --text "Alice was born on 1990-01-02" --privacy-filter
+  redacted provider enable apple
   redacted provider enable openai
   redacted provider enable ollama --runtime-model qwen3-coder:30b
   redacted provider list
@@ -261,19 +263,23 @@ USAGE:
   redacted provider disable
 
 OVERVIEW:
-  Provider aliases are human-friendly shortcuts such as `openai`.
-  Exact targets are persistent IDs such as `openai/privacy-filter-v1`.
+  Provider aliases are human-friendly shortcuts such as `apple` or `openai`.
+  Exact targets are persistent IDs such as `apple/foundation-v1`.
   Aliases always resolve to a pinned exact target and the command prints
   the resolved target before it changes local state.
   Provider mode is optional and lower-trust than the hardened Rust-only core scan path.
+  `apple` is the supported Apple-local system-model path on macOS 26+.
   `openai` is the supported token-span path.
   `ollama` is an experimental generative-extraction path.
 
 EXAMPLES:
+  redacted provider enable apple
   redacted provider enable openai
   redacted provider enable ollama --runtime-model qwen3-coder:30b
+  redacted provider install apple/foundation-v1
   redacted provider install openai/privacy-filter-v1
   redacted provider install ollama/structured-v1 --runtime-model qwen3-coder:30b
+  redacted provider use apple
   redacted provider use openai
   redacted provider use ollama --runtime-model qwen3-coder:30b
   redacted provider current
@@ -292,6 +298,8 @@ USAGE:
   redacted provider enable <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
+  redacted provider enable apple
+  redacted provider enable apple/foundation-v1
   redacted provider enable openai
   redacted provider enable openai/privacy-filter-v1
   redacted provider enable ollama
@@ -299,10 +307,11 @@ EXAMPLES:
   redacted provider enable ollama/structured-v1 --runtime-model qwen3-coder:30b
 
 BEHAVIOR:
-  - Resolves aliases such as `openai` to a pinned exact target.
+  - Resolves aliases such as `apple` and `openai` to pinned exact targets.
   - Installs the bundle if it is missing.
   - Verifies the installed bundle if no verification stamp is present.
   - Marks the resolved exact target as active.
+  - Apple targets build a local runner around the system on-device model and require Apple Intelligence on macOS 26+.
   - Ollama targets require a running local Ollama API.
   - Ollama targets use `--runtime-model <NAME>` to choose the local Ollama model.
   - If `--runtime-model` is omitted and Ollama has exactly one local model, that model is used automatically.
@@ -316,6 +325,8 @@ USAGE:
   redacted provider install <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
+  redacted provider install apple
+  redacted provider install apple/foundation-v1
   redacted provider install openai
   redacted provider install openai/privacy-filter-v1
   redacted provider install ollama
@@ -329,6 +340,8 @@ USAGE:
   redacted provider use <provider-or-target> [--runtime-model <NAME>]
 
 EXAMPLES:
+  redacted provider use apple
+  redacted provider use apple/foundation-v1
   redacted provider use openai
   redacted provider use openai/privacy-filter-v1
   redacted provider use ollama
@@ -338,9 +351,10 @@ EXAMPLES:
 NOTE:
   `use` does not download anything. Use `enable` for easy onboarding or
   `install` first if you want a separate install step.
+  Apple targets require Apple Intelligence to be available on this Mac.
   `--runtime-model` updates the saved local Ollama model for Ollama targets.
   The `ollama` target is experimental and lower-fidelity than the supported
-  OpenAI token-span path."#
+  Apple and OpenAI paths."#
         }
         ProviderHelpTopic::Current => {
             r#"redacted provider current — show the active provider target.
@@ -362,6 +376,8 @@ USAGE:
 
 EXAMPLES:
   redacted provider verify
+  redacted provider verify apple
+  redacted provider verify apple/foundation-v1
   redacted provider verify openai
   redacted provider verify openai/privacy-filter-v1
   redacted provider verify ollama
@@ -370,6 +386,7 @@ EXAMPLES:
 
 DEFAULT:
   Without a selector or `--all`, the active provider is verified.
+  Apple verification checks the local runner bundle; runtime readiness is enforced when the provider is enabled or used.
   Ollama verification checks local runtime availability, not pinned model weights."#
         }
         ProviderHelpTopic::Disable => {
