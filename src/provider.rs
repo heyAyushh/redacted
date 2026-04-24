@@ -5,12 +5,9 @@ use crate::io_safe;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROVIDER_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -20,39 +17,22 @@ const PROVIDER_BUNDLE_MANIFEST_FILE: &str = "bundle.state";
 const PROVIDER_BUNDLES_DIR: &str = "providers";
 const PROVIDER_RUNNER_DIR: &str = "runner";
 const PROVIDER_MODEL_DIR: &str = "model";
-const PROVIDER_RUNTIME_DIR: &str = "runtime";
-const APPLE_PROVIDER_ALIAS: &str = "apple";
-const APPLE_FOUNDATION_TARGET: &str = "apple/foundation-v1";
-const APPLE_RUNNER_BINARY_NAME: &str = "apple_foundation_runner";
 const OPENAI_PROVIDER_ALIAS: &str = "openai";
 const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
-const OLLAMA_PROVIDER_ALIAS: &str = "ollama";
-const OLLAMA_PRIVACY_TARGET: &str = "ollama/structured-v1";
-const OLLAMA_LEGACY_TARGET: &str = "ollama/gpt-oss-v1";
-const OLLAMA_RUNNER_SCRIPT_NAME: &str = "ollama_privacy_runner.py";
-const OLLAMA_RUNTIME_STATE_FILE: &str = "ollama-runtime.state";
 const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
 const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
-const REDACTED_PROVIDER_SWIFTC_OVERRIDE: &str = "REDACTED_PROVIDER_SWIFTC";
-const REDACTED_OLLAMA_BASE_URL_OVERRIDE: &str = "REDACTED_OLLAMA_BASE_URL";
-const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/api";
-const HTTP_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderAdapterKind {
-    AppleFoundationLocal,
     OpenAiOpfLocal,
-    OllamaLocalApi,
 }
 
 impl ProviderAdapterKind {
     fn manifest_name(self) -> &'static str {
         match self {
-            Self::AppleFoundationLocal => "apple-foundation-local",
             Self::OpenAiOpfLocal => "openai-opf-local",
-            Self::OllamaLocalApi => "ollama-local-api",
         }
     }
 
@@ -62,25 +42,19 @@ impl ProviderAdapterKind {
 
     fn trust_level(self) -> &'static str {
         match self {
-            Self::AppleFoundationLocal => "optional-system",
             Self::OpenAiOpfLocal => "optional-external",
-            Self::OllamaLocalApi => "optional-service",
         }
     }
 
     fn support_tier(self) -> &'static str {
         match self {
-            Self::AppleFoundationLocal => "supported",
             Self::OpenAiOpfLocal => "supported",
-            Self::OllamaLocalApi => "experimental",
         }
     }
 
     fn detection_mode(self) -> &'static str {
         match self {
-            Self::AppleFoundationLocal => "structured-extraction",
             Self::OpenAiOpfLocal => "token-span",
-            Self::OllamaLocalApi => "generative-extraction",
         }
     }
 }
@@ -154,12 +128,6 @@ struct InstallOutcome {
 }
 
 #[derive(Debug)]
-struct OllamaRuntimeState {
-    base_url: String,
-    model_name: String,
-}
-
-#[derive(Debug)]
 struct ProviderSpan {
     label: String,
     start: usize,
@@ -218,21 +186,6 @@ const OPENAI_LABEL_MAPPINGS: [LabelMapping; 8] = [
     },
 ];
 
-const APPLE_FOUNDATION_RUNNER_SOURCE: &str =
-    include_str!("../assets/providers/apple_foundation_runner.swift");
-
-const APPLE_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
-    target: APPLE_FOUNDATION_TARGET,
-    provider: "apple",
-    model: "foundation-v1",
-    aliases: &[APPLE_PROVIDER_ALIAS],
-    legacy_targets: &[],
-    adapter: ProviderAdapterKind::AppleFoundationLocal,
-    package: None,
-    model_artifacts: &[],
-    labels: &OPENAI_LABEL_MAPPINGS,
-};
-
 const OPENAI_PACKAGE_ARTIFACT: ArtifactSpec = ArtifactSpec {
     bundle_rel: "downloads/opf-source.tar.gz",
     url: "https://github.com/openai/privacy-filter/archive/2e8c95b9771eec29ef61012f6e5e836f9bad7635.tar.gz",
@@ -279,23 +232,7 @@ const OPENAI_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     labels: &OPENAI_LABEL_MAPPINGS,
 };
 
-const OLLAMA_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
-    target: OLLAMA_PRIVACY_TARGET,
-    provider: "ollama",
-    model: "structured-v1",
-    aliases: &[OLLAMA_PROVIDER_ALIAS],
-    legacy_targets: &[OLLAMA_LEGACY_TARGET],
-    adapter: ProviderAdapterKind::OllamaLocalApi,
-    package: None,
-    model_artifacts: &[],
-    labels: &OPENAI_LABEL_MAPPINGS,
-};
-
-const PROVIDER_CATALOG: [ProviderCatalogEntry; 3] = [
-    APPLE_PROVIDER_ENTRY,
-    OPENAI_PROVIDER_ENTRY,
-    OLLAMA_PROVIDER_ENTRY,
-];
+const PROVIDER_CATALOG: [ProviderCatalogEntry; 1] = [OPENAI_PROVIDER_ENTRY];
 
 const OPENAI_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import argparse
@@ -379,179 +316,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 "#;
 
-const OLLAMA_RUNNER_SCRIPT: &str = r##"#!/usr/bin/env python3
-import argparse
-import json
-import pathlib
-import sys
-import urllib.request
-
-LABELS = [
-    "account_number",
-    "private_address",
-    "private_date",
-    "private_email",
-    "private_person",
-    "private_phone",
-    "private_url",
-    "secret",
-]
-
-SCHEMA = {
-    "type": "object",
-    "properties": {
-        "spans": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string", "enum": LABELS},
-                    "text": {"type": "string"},
-                },
-                "required": ["label", "text"],
-            },
-        }
-    },
-    "required": ["spans"],
-}
-
-
-def load_runtime_config(runtime_dir: pathlib.Path) -> tuple[str, str]:
-    values: dict[str, str] = {}
-    config_path = runtime_dir / "ollama-runtime.state"
-    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip()
-    return values["base_url"], values["model_name"]
-
-
-def build_char_to_byte_offsets(text: str) -> list[int]:
-    offsets = [0]
-    total = 0
-    for char in text:
-        total += len(char.encode("utf-8"))
-        offsets.append(total)
-    return offsets
-
-
-def build_prompt(text: str) -> str:
-    return (
-        "Extract privacy-sensitive spans from the input text.\n"
-        "Return JSON only.\n"
-        "For each span, use one label from this list exactly: "
-        + ", ".join(LABELS)
-        + ".\n"
-        "For each span, return the exact substring from the input text in the `text` field.\n"
-        "Do not paraphrase, normalize, trim, or invent text.\n"
-        "Sort spans by first appearance in the input.\n"
-        "If nothing matches, return {\"spans\": []}.\n"
-        "Input text:\n"
-        + text
-    )
-
-
-def align_spans(text: str, raw_spans: list[dict]) -> list[dict]:
-    offsets = build_char_to_byte_offsets(text)
-    positioned = []
-    search_start = 0
-    for span in raw_spans:
-        label = span.get("label")
-        snippet = span.get("text")
-        if not isinstance(label, str) or not isinstance(snippet, str) or not snippet:
-            raise ValueError("invalid_span")
-        start = text.find(snippet, search_start)
-        if start == -1:
-            start = text.find(snippet)
-        if start == -1:
-            raise ValueError("span_not_found")
-        end = start + len(snippet)
-        search_start = end
-        positioned.append(
-            {
-                "label": label,
-                "start": offsets[start],
-                "end": offsets[end],
-            }
-        )
-    return positioned
-
-
-def generate(base_url: str, model_name: str, text: str) -> list[dict]:
-    body = {
-        "model": model_name,
-        "prompt": build_prompt(text),
-        "stream": False,
-        "format": SCHEMA,
-        "options": {"temperature": 0},
-        "keep_alive": "5m",
-    }
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/generate",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        payload = json.load(response)
-    content = payload.get("response")
-    if not isinstance(content, str):
-        raise ValueError("missing_response")
-    parsed = json.loads(content)
-    spans = parsed.get("spans", [])
-    if not isinstance(spans, list):
-        raise ValueError("invalid_schema")
-    return align_spans(text, spans)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--target", required=True)
-    parser.add_argument("--checkpoint", required=True)
-    args = parser.parse_args()
-
-    base_url, model_name = load_runtime_config(pathlib.Path(args.checkpoint))
-
-    for raw_line in sys.stdin:
-        line = raw_line.strip()
-        if not line:
-            continue
-
-        request_id = "unknown"
-        try:
-            payload = json.loads(line)
-            request_id = str(payload.get("request_id", "unknown"))
-            text = payload.get("text")
-            schema_version = payload.get("schema_version")
-            if schema_version != 1 or not isinstance(text, str):
-                raise ValueError("invalid_request_schema")
-            spans = generate(base_url, model_name, text)
-            response = {
-                "schema_version": 1,
-                "request_id": request_id,
-                "target": args.target,
-                "spans": spans,
-            }
-        except Exception as exc:
-            response = {
-                "schema_version": 1,
-                "request_id": request_id,
-                "target": args.target,
-                "error": f"runtime error: {exc.__class__.__name__}",
-                "spans": [],
-            }
-
-        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-"##;
-
 pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
     if let Some(topic) = args.help.clone() {
         print_provider_help(topic);
@@ -559,43 +323,31 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
     }
 
     match args.command.as_ref() {
-        Some(ProviderSubcommand::Enable {
-            selector,
-            runtime_model,
-        }) => {
+        Some(ProviderSubcommand::Enable { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
             let bundle = bundle_root_for_entry(entry)?;
             let installed_now = if is_bundle_installed(entry, &bundle)? {
-                if let Some(model_name) = runtime_model.as_deref() {
-                    apply_runtime_model_override(entry, &bundle, model_name, true)?;
-                }
                 if !has_verified_state(&bundle)? {
                     verify_bundle(entry, &bundle)?;
                 }
                 false
             } else {
-                install_target(entry, runtime_model.as_deref())?.installed_now
+                install_target(entry)?.installed_now
             };
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
-            let mut message = format!(
+            let message = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\nactive: yes\npath: {}\n",
                 entry.target,
                 if installed_now { "yes" } else { "already" },
                 bundle.display()
             );
-            if let Some(model_name) = current_runtime_model(entry, &bundle)? {
-                message.push_str(&format!("runtime model: {}\n", model_name));
-            }
             io_safe::write_stdout(&message)?;
         }
-        Some(ProviderSubcommand::Install {
-            selector,
-            runtime_model,
-        }) => {
+        Some(ProviderSubcommand::Install { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
-            let outcome = install_target(entry, runtime_model.as_deref())?;
-            let mut message = format!(
+            let outcome = install_target(entry)?;
+            let message = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
                 entry.target,
                 if outcome.installed_now {
@@ -605,38 +357,24 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 },
                 outcome.bundle_root.display()
             );
-            if let Some(model_name) = current_runtime_model(entry, &outcome.bundle_root)? {
-                message.push_str(&format!("runtime model: {}\n", model_name));
-            }
             io_safe::write_stdout(&message)?;
         }
-        Some(ProviderSubcommand::Use {
-            selector,
-            runtime_model,
-        }) => {
+        Some(ProviderSubcommand::Use { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
             let bundle = bundle_root_for_entry(entry)?;
-            if let Some(model_name) = runtime_model.as_deref() {
-                apply_runtime_model_override(entry, &bundle, model_name, false)?;
-            }
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
-            let mut message = format!(
+            let message = format!(
                 "resolved target: {}\nactive: yes\npath: {}\n",
                 entry.target,
                 bundle.display()
             );
-            if let Some(model_name) = current_runtime_model(entry, &bundle)? {
-                message.push_str(&format!("runtime model: {}\n", model_name));
-            }
             io_safe::write_stdout(&message)?;
         }
         Some(ProviderSubcommand::Current) => {
             if let Some(state) = load_active_provider_state()? {
                 let message = if let Some(entry) = find_catalog_entry_by_target(&state.target) {
-                    let bundle = bundle_root_for_entry(entry)?;
-                    let runtime_model = current_runtime_model(entry, &bundle)?;
-                    let mut message = format!(
+                    let message = format!(
                         "active target: {}\nadapter: {}\nmode: {}\nsupport: {}\ntrust: {}\n",
                         state.target,
                         entry.adapter.display_name(),
@@ -644,9 +382,6 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                         entry.adapter.support_tier(),
                         entry.adapter.trust_level()
                     );
-                    if let Some(model_name) = runtime_model {
-                        message.push_str(&format!("runtime model: {}\n", model_name));
-                    }
                     message
                 } else {
                     format!("active target: {}\n", state.target)
@@ -654,7 +389,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 io_safe::write_stdout(&message)?;
             } else {
                 io_safe::write_stdout(
-                    "No active provider configured.\nSet one up with:\n  redacted provider enable apple\n  redacted provider enable openai\n",
+                    "No active provider configured.\nSet one up with:\n  redacted provider enable openai\n",
                 )?;
             }
         }
@@ -688,7 +423,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                     None => {
                         let active = load_active_provider_state()?.ok_or_else(|| {
                             RedactError::Usage(
-                                "No active provider is configured.\n  redacted provider enable apple\n  redacted provider enable openai".into(),
+                                "No active provider is configured.\n  redacted provider enable openai".into(),
                             )
                         })?;
                         find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -701,14 +436,11 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
                 };
                 let bundle = bundle_root_for_entry(entry)?;
                 verify_bundle(entry, &bundle)?;
-                let mut message = format!(
+                let message = format!(
                     "verified target: {}\npath: {}\n",
                     entry.target,
                     bundle.display()
                 );
-                if let Some(model_name) = current_runtime_model(entry, &bundle)? {
-                    message.push_str(&format!("runtime model: {}\n", model_name));
-                }
                 io_safe::write_stdout(&message)?;
             }
         }
@@ -732,7 +464,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
 pub fn start_active_session() -> Result<ProviderSession> {
     let active = load_active_provider_state()?.ok_or_else(|| {
         RedactError::Usage(
-            "No active privacy-filter provider is configured.\n  redacted provider enable apple\n  redacted provider enable openai\n  redacted provider list".into(),
+            "No active privacy-filter provider is configured.\n  redacted provider enable openai\n  redacted provider list".into(),
         )
     })?;
     let entry = find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -929,11 +661,6 @@ fn format_provider_list() -> Result<String> {
             .as_ref()
             .map(|target| entry.target == target || entry.legacy_targets.contains(&target.as_str()))
             .unwrap_or(false);
-        let runtime_model = if installed {
-            current_runtime_model(entry, &bundle)?
-        } else {
-            None
-        };
         output.push_str(&format!(
             "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}",
             entry.target,
@@ -945,29 +672,14 @@ fn format_provider_list() -> Result<String> {
             yes_or_no(verified),
             yes_or_no(active),
         ));
-        if let Some(model_name) = runtime_model {
-            output.push_str(&format!("  runtime_model={}", model_name));
-        }
         output.push('\n');
     }
     Ok(output)
 }
 
-fn install_target(
-    entry: &'static ProviderCatalogEntry,
-    runtime_model: Option<&str>,
-) -> Result<InstallOutcome> {
-    if runtime_model.is_some() && entry.adapter != ProviderAdapterKind::OllamaLocalApi {
-        return Err(RedactError::Usage(format!(
-            "Provider '{}' does not accept --runtime-model.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b",
-            entry.target
-        )));
-    }
+fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome> {
     let bundle_root = bundle_root_for_entry(entry)?;
     if is_bundle_installed(entry, &bundle_root)? {
-        if let Some(model_name) = runtime_model {
-            apply_runtime_model_override(entry, &bundle_root, model_name, true)?;
-        }
         if !has_verified_state(&bundle_root)? {
             verify_bundle(entry, &bundle_root)?;
         }
@@ -1003,13 +715,7 @@ fn install_target(
         ))
     })?;
 
-    let install_result = match entry.adapter {
-        ProviderAdapterKind::AppleFoundationLocal => install_apple_bundle(entry, &temp_bundle),
-        ProviderAdapterKind::OpenAiOpfLocal => install_openai_bundle(entry, &temp_bundle),
-        ProviderAdapterKind::OllamaLocalApi => {
-            install_ollama_bundle(entry, &temp_bundle, runtime_model)
-        }
-    };
+    let install_result = install_openai_bundle(entry, &temp_bundle);
 
     if let Err(error) = install_result {
         let _ = fs::remove_dir_all(&temp_bundle);
@@ -1096,63 +802,8 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
     for artifact in entry.model_artifacts {
         verify_artifact_at_path(artifact, &bundle_root.join(artifact.bundle_rel))?;
     }
-    if entry.adapter == ProviderAdapterKind::OllamaLocalApi {
-        verify_ollama_runtime_bundle(bundle_root)?;
-    }
     save_verified_state(
         bundle_root,
-        &VerifiedState {
-            schema_version: PROVIDER_SCHEMA_VERSION,
-            target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
-        },
-    )?;
-    Ok(())
-}
-
-fn install_apple_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
-    let runtime_dir = temp_bundle.join(PROVIDER_RUNTIME_DIR);
-    fs::create_dir_all(&runtime_dir).map_err(|error| {
-        RedactError::Config(format!(
-            "Cannot create Apple runtime directory '{}': {}",
-            runtime_dir.display(),
-            error
-        ))
-    })?;
-
-    let runner_dir = temp_bundle.join(PROVIDER_RUNNER_DIR);
-    fs::create_dir_all(&runner_dir).map_err(|error| {
-        RedactError::Config(format!(
-            "Cannot create Apple runner directory '{}': {}",
-            runner_dir.display(),
-            error
-        ))
-    })?;
-
-    let source_path = runner_dir.join("apple_foundation_runner.swift");
-    io_safe::atomic_write(&source_path, APPLE_FOUNDATION_RUNNER_SOURCE)?;
-
-    let runner_path = runner_dir.join(APPLE_RUNNER_BINARY_NAME);
-    compile_apple_foundation_runner(&source_path, &runner_path)?;
-    let runner_sha256 = sha256_hex_of_path(&runner_path)?;
-
-    let manifest = BundleManifest {
-        schema_version: PROVIDER_SCHEMA_VERSION,
-        target: entry.target.to_string(),
-        provider: entry.provider.to_string(),
-        model: entry.model.to_string(),
-        adapter: entry.adapter.manifest_name().into(),
-        runner_rel: Path::new(PROVIDER_RUNNER_DIR)
-            .join(APPLE_RUNNER_BINARY_NAME)
-            .to_string_lossy()
-            .into_owned(),
-        entry_rel: None,
-        checkpoint_rel: PROVIDER_RUNTIME_DIR.into(),
-        runner_sha256,
-    };
-    save_bundle_manifest(temp_bundle, &manifest)?;
-    save_verified_state(
-        temp_bundle,
         &VerifiedState {
             schema_version: PROVIDER_SCHEMA_VERSION,
             target: entry.target.into(),
@@ -1199,62 +850,6 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
                 .into_owned(),
         ),
         checkpoint_rel: PROVIDER_MODEL_DIR.into(),
-        runner_sha256,
-    };
-    save_bundle_manifest(temp_bundle, &manifest)?;
-    save_verified_state(
-        temp_bundle,
-        &VerifiedState {
-            schema_version: PROVIDER_SCHEMA_VERSION,
-            target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
-        },
-    )?;
-    Ok(())
-}
-
-fn install_ollama_bundle(
-    entry: &ProviderCatalogEntry,
-    temp_bundle: &Path,
-    requested_runtime_model: Option<&str>,
-) -> Result<()> {
-    let base_url = ollama_base_url();
-    let model_name = resolve_ollama_runtime_model(&base_url, requested_runtime_model, None, true)?;
-    ensure_ollama_model_available(&base_url, &model_name, true)?;
-
-    let runtime_dir = temp_bundle.join(PROVIDER_RUNTIME_DIR);
-    fs::create_dir_all(&runtime_dir).map_err(|error| {
-        RedactError::Config(format!(
-            "Cannot create Ollama runtime directory '{}': {}",
-            runtime_dir.display(),
-            error
-        ))
-    })?;
-    save_ollama_runtime_state(
-        &runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE),
-        &OllamaRuntimeState {
-            base_url,
-            model_name,
-        },
-    )?;
-
-    let runner_path = temp_bundle
-        .join(PROVIDER_RUNNER_DIR)
-        .join(OLLAMA_RUNNER_SCRIPT_NAME);
-    write_ollama_runner_script(&runner_path)?;
-    let runner_sha256 = sha256_hex_of_bytes(OLLAMA_RUNNER_SCRIPT.as_bytes());
-    let manifest = BundleManifest {
-        schema_version: PROVIDER_SCHEMA_VERSION,
-        target: entry.target.to_string(),
-        provider: entry.provider.to_string(),
-        model: entry.model.to_string(),
-        adapter: entry.adapter.manifest_name().into(),
-        runner_rel: Path::new(PROVIDER_RUNNER_DIR)
-            .join(OLLAMA_RUNNER_SCRIPT_NAME)
-            .to_string_lossy()
-            .into_owned(),
-        entry_rel: None,
-        checkpoint_rel: PROVIDER_RUNTIME_DIR.into(),
         runner_sha256,
     };
     save_bundle_manifest(temp_bundle, &manifest)?;
@@ -1348,12 +943,6 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
             entry.target,
             checkpoint_path.display()
         )));
-    }
-    if entry.adapter == ProviderAdapterKind::OllamaLocalApi {
-        verify_ollama_runtime_bundle(bundle_root)?;
-    }
-    if entry.adapter == ProviderAdapterKind::AppleFoundationLocal {
-        verify_apple_foundation_runtime(bundle_root)?;
     }
     Ok(())
 }
@@ -1718,25 +1307,6 @@ fn load_verified_state(path: &Path) -> Result<VerifiedState> {
     })
 }
 
-fn save_ollama_runtime_state(path: &Path, state: &OllamaRuntimeState) -> Result<()> {
-    let content = format!(
-        "base_url={}\nmodel_name={}\n",
-        state.base_url, state.model_name
-    );
-    io_safe::atomic_write(path, &content)
-}
-
-fn load_ollama_runtime_state(bundle_root: &Path) -> Result<OllamaRuntimeState> {
-    let path = bundle_root
-        .join(PROVIDER_RUNTIME_DIR)
-        .join(OLLAMA_RUNTIME_STATE_FILE);
-    let values = parse_key_value_file(&path)?;
-    Ok(OllamaRuntimeState {
-        base_url: parse_required_value(&values, "base_url", &path)?,
-        model_name: parse_required_value(&values, "model_name", &path)?,
-    })
-}
-
 fn parse_key_value_file(path: &Path) -> Result<HashMap<String, String>> {
     let content = fs::read_to_string(path).map_err(|error| {
         RedactError::Config(format!("Cannot read '{}': {}", path.display(), error))
@@ -1958,70 +1528,8 @@ fn write_openai_runner_script(path: &Path) -> Result<()> {
     io_safe::atomic_write(path, OPENAI_RUNNER_SCRIPT)
 }
 
-fn compile_apple_foundation_runner(source_path: &Path, output_path: &Path) -> Result<()> {
-    let swiftc = system_swiftc_command();
-    let output = Command::new(&swiftc)
-        .arg("-parse-as-library")
-        .arg("-O")
-        .arg(source_path)
-        .arg("-o")
-        .arg(output_path)
-        .output()
-        .map_err(|error| {
-            RedactError::Config(format!(
-                "Failed to start Apple Foundation runner build with '{}': {}",
-                swiftc, error
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(RedactError::Config(format!(
-            "Apple Foundation runner build failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    make_executable_if_supported(output_path)
-}
-
-fn write_ollama_runner_script(path: &Path) -> Result<()> {
-    io_safe::atomic_write(path, OLLAMA_RUNNER_SCRIPT)?;
-    make_executable_if_supported(path)
-}
-
 fn system_python_command() -> String {
     std::env::var(REDACTED_PROVIDER_PYTHON_OVERRIDE).unwrap_or_else(|_| "python3".into())
-}
-
-fn system_swiftc_command() -> String {
-    std::env::var(REDACTED_PROVIDER_SWIFTC_OVERRIDE).unwrap_or_else(|_| "swiftc".into())
-}
-
-fn ollama_base_url() -> String {
-    std::env::var(REDACTED_OLLAMA_BASE_URL_OVERRIDE)
-        .unwrap_or_else(|_| DEFAULT_OLLAMA_BASE_URL.into())
-}
-
-fn make_executable_if_supported(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(path)
-            .map_err(|error| {
-                RedactError::Config(format!(
-                    "Cannot inspect runner script '{}': {}",
-                    path.display(),
-                    error
-                ))
-            })?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).map_err(|error| {
-            RedactError::Config(format!(
-                "Cannot mark runner script '{}' executable: {}",
-                path.display(),
-                error
-            ))
-        })?;
-    }
-    Ok(())
 }
 
 fn download_file_via_python(url: &str, destination: &Path) -> Result<()> {
@@ -2063,315 +1571,6 @@ with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as ha
         )));
     }
     Ok(())
-}
-
-fn verify_ollama_runtime_bundle(bundle_root: &Path) -> Result<()> {
-    let state = load_ollama_runtime_state(bundle_root)?;
-    ensure_ollama_model_available(&state.base_url, &state.model_name, false)
-}
-
-fn verify_apple_foundation_runtime(bundle_root: &Path) -> Result<()> {
-    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
-    let runner_path = bundle_root.join(&manifest.runner_rel);
-    let output = Command::new(&runner_path)
-        .arg("--availability-check")
-        .output()
-        .map_err(|error| {
-            RedactError::Config(format!(
-                "Failed to query Apple Foundation availability with '{}': {}",
-                runner_path.display(),
-                error
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(RedactError::Config(format!(
-            "Apple Foundation runner availability check failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    match status.as_str() {
-        "available" => Ok(()),
-        "unavailable:apple_intelligence_not_enabled" => Err(RedactError::Usage(
-            "Apple Foundation Models is installed but Apple Intelligence is not enabled on this Mac.\nEnable Apple Intelligence, then run:\n  redacted provider use apple".into(),
-        )),
-        "unavailable:model_not_ready" => Err(RedactError::Usage(
-            "Apple Foundation Models is installed but the on-device system model is still downloading or preparing.\nWait for the model to finish, then run:\n  redacted provider use apple".into(),
-        )),
-        "unavailable:device_not_eligible" => Err(RedactError::Usage(
-            "Apple Foundation Models requires a Mac that supports Apple Intelligence.\nUse another provider on this machine, for example:\n  redacted provider enable openai".into(),
-        )),
-        other => Err(RedactError::Usage(format!(
-            "Apple Foundation Models is not ready on this Mac: {}\nUse another provider or retry after the system model becomes available.",
-            other
-        ))),
-    }
-}
-
-fn current_runtime_model(
-    entry: &'static ProviderCatalogEntry,
-    bundle_root: &Path,
-) -> Result<Option<String>> {
-    if entry.adapter != ProviderAdapterKind::OllamaLocalApi || !bundle_root.exists() {
-        return Ok(None);
-    }
-    let state = load_ollama_runtime_state(bundle_root)?;
-    Ok(Some(state.model_name))
-}
-
-fn apply_runtime_model_override(
-    entry: &'static ProviderCatalogEntry,
-    bundle_root: &Path,
-    runtime_model: &str,
-    allow_pull: bool,
-) -> Result<()> {
-    if entry.adapter != ProviderAdapterKind::OllamaLocalApi {
-        return Err(RedactError::Usage(format!(
-            "Provider '{}' does not accept --runtime-model.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b",
-            entry.target
-        )));
-    }
-    if !is_bundle_installed(entry, bundle_root)? {
-        return Err(RedactError::Usage(format!(
-            "Provider bundle '{}' is not installed.\n  redacted provider install {}",
-            entry.target, entry.target
-        )));
-    }
-    let runtime_dir = bundle_root.join(PROVIDER_RUNTIME_DIR);
-    fs::create_dir_all(&runtime_dir).map_err(|error| {
-        RedactError::Config(format!(
-            "Cannot create Ollama runtime directory '{}': {}",
-            runtime_dir.display(),
-            error
-        ))
-    })?;
-    let base_url = if runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE).is_file() {
-        load_ollama_runtime_state(bundle_root)?.base_url
-    } else {
-        ollama_base_url()
-    };
-    ensure_ollama_model_available(&base_url, runtime_model, allow_pull)?;
-    save_ollama_runtime_state(
-        &runtime_dir.join(OLLAMA_RUNTIME_STATE_FILE),
-        &OllamaRuntimeState {
-            base_url,
-            model_name: runtime_model.to_string(),
-        },
-    )?;
-    save_verified_state(
-        bundle_root,
-        &VerifiedState {
-            schema_version: PROVIDER_SCHEMA_VERSION,
-            target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
-        },
-    )?;
-    Ok(())
-}
-
-fn resolve_ollama_runtime_model(
-    base_url: &str,
-    requested_runtime_model: Option<&str>,
-    existing_runtime_state: Option<&OllamaRuntimeState>,
-    allow_infer_single_model: bool,
-) -> Result<String> {
-    if let Some(model_name) = requested_runtime_model {
-        return Ok(model_name.to_string());
-    }
-    if let Some(state) = existing_runtime_state {
-        return Ok(state.model_name.clone());
-    }
-    if !allow_infer_single_model {
-        return Err(RedactError::Usage(
-            "Ollama requires --runtime-model when no saved local model is configured.\n  redacted provider enable ollama --runtime-model qwen3-coder:30b".into(),
-        ));
-    }
-    let installed_models = list_ollama_models(base_url)?;
-    match installed_models.as_slice() {
-        [model_name] => Ok(model_name.clone()),
-        [] => Err(RedactError::Usage(
-            "No local Ollama models are available.\nInstall one first, then run:\n  redacted provider enable ollama --runtime-model qwen3-coder:30b".into(),
-        )),
-        _ => Err(RedactError::Usage(format!(
-            "Multiple local Ollama models are available at {}.\nChoose one with:\n  redacted provider enable ollama --runtime-model <MODEL>\nInstalled models: {}",
-            base_url,
-            installed_models.join(", ")
-        ))),
-    }
-}
-
-fn ensure_ollama_model_available(
-    base_url: &str,
-    model_name: &str,
-    pull_if_missing: bool,
-) -> Result<()> {
-    if ollama_model_available(base_url, model_name)? {
-        return Ok(());
-    }
-    if !pull_if_missing {
-        return Err(RedactError::Usage(format!(
-            "Ollama model '{}' is not available at {}.\nStart Ollama locally and install it, then run:\n  redacted provider enable ollama --runtime-model {}",
-            model_name, base_url, model_name
-        )));
-    }
-    pull_ollama_model(base_url, model_name)?;
-    if ollama_model_available(base_url, model_name)? {
-        return Ok(());
-    }
-    Err(RedactError::Config(format!(
-        "Ollama model '{}' was not available after pull at {}.",
-        model_name, base_url
-    )))
-}
-
-fn ollama_model_available(base_url: &str, model_name: &str) -> Result<bool> {
-    Ok(list_ollama_models(base_url)?
-        .iter()
-        .any(|installed| ollama_model_name_matches(installed, model_name)))
-}
-
-fn list_ollama_models(base_url: &str) -> Result<Vec<String>> {
-    let tags_url = join_url_path(base_url, "tags");
-    let response_body = http_request_json("GET", &tags_url, None)?;
-    let value = JsonParser::new(&response_body).parse().map_err(|message| {
-        RedactError::Config(format!("Invalid Ollama tags response: {}", message))
-    })?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| RedactError::Config("Ollama tags response must be a JSON object.".into()))?;
-    let models = object
-        .get("models")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| RedactError::Config("Ollama tags response is missing models.".into()))?;
-    Ok(models
-        .iter()
-        .filter_map(ollama_model_name_from_value)
-        .collect())
-}
-
-fn ollama_model_name_from_value(value: &JsonValue) -> Option<String> {
-    let object = value.as_object()?;
-    ["name", "model"]
-        .iter()
-        .find_map(|key| object.get(*key).and_then(JsonValue::as_str))
-        .map(str::to_string)
-}
-
-fn ollama_model_name_matches(installed_model: &str, requested_model: &str) -> bool {
-    installed_model == requested_model
-        || installed_model.starts_with(&format!("{}:", requested_model))
-}
-
-fn pull_ollama_model(base_url: &str, model_name: &str) -> Result<()> {
-    let pull_url = join_url_path(base_url, "pull");
-    let body = format!(
-        "{{\"model\":\"{}\",\"stream\":false}}",
-        json_escape(model_name)
-    );
-    let _ = http_request_json("POST", &pull_url, Some(&body))?;
-    Ok(())
-}
-
-fn join_url_path(base_url: &str, suffix: &str) -> String {
-    format!("{}/{}", base_url.trim_end_matches('/'), suffix)
-}
-
-fn http_request_json(method: &str, url: &str, body: Option<&str>) -> Result<String> {
-    let parsed = parse_http_url(url)?;
-    let mut stream = TcpStream::connect((parsed.host.as_str(), parsed.port))
-        .map_err(|error| RedactError::Config(format!("Cannot connect to '{}': {}", url, error)))?;
-    let timeout = Duration::from_secs(HTTP_TIMEOUT_SECONDS);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let request_body = body.unwrap_or("");
-    let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n",
-        method = method,
-        path = parsed.path,
-        host = parsed.host
-    );
-    if body.is_some() {
-        request.push_str("Content-Type: application/json\r\n");
-        request.push_str(&format!("Content-Length: {}\r\n", request_body.len()));
-    }
-    request.push_str("\r\n");
-    request.push_str(request_body);
-    stream.write_all(request.as_bytes()).map_err(|error| {
-        RedactError::Config(format!(
-            "Failed to write HTTP request to '{}': {}",
-            url, error
-        ))
-    })?;
-
-    let mut response = String::new();
-    stream.read_to_string(&mut response).map_err(|error| {
-        RedactError::Config(format!(
-            "Failed to read HTTP response from '{}': {}",
-            url, error
-        ))
-    })?;
-    let (head, body_text) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| RedactError::Config(format!("Malformed HTTP response from '{}'.", url)))?;
-    let mut lines = head.lines();
-    let status_line = lines
-        .next()
-        .ok_or_else(|| RedactError::Config(format!("Missing HTTP status line from '{}'.", url)))?;
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| RedactError::Config(format!("Malformed HTTP status from '{}'.", url)))?
-        .parse::<u16>()
-        .map_err(|_| RedactError::Config(format!("Malformed HTTP status from '{}'.", url)))?;
-    if !(200..300).contains(&status) {
-        return Err(RedactError::Config(format!(
-            "HTTP request to '{}' failed with status {}.",
-            url, status
-        )));
-    }
-    Ok(body_text.to_string())
-}
-
-#[derive(Debug)]
-struct ParsedHttpUrl {
-    host: String,
-    port: u16,
-    path: String,
-}
-
-fn parse_http_url(url: &str) -> Result<ParsedHttpUrl> {
-    let without_scheme = url.strip_prefix("http://").ok_or_else(|| {
-        RedactError::Config(format!(
-            "Only local http:// Ollama URLs are supported, got '{}'.",
-            url
-        ))
-    })?;
-    let (host_port, path) = match without_scheme.find('/') {
-        Some(index) => (&without_scheme[..index], &without_scheme[index..]),
-        None => (without_scheme, "/"),
-    };
-    let (host, port) = match host_port.rsplit_once(':') {
-        Some((host, port_text)) if !host.is_empty() => (
-            host.to_string(),
-            port_text.parse::<u16>().map_err(|_| {
-                RedactError::Config(format!("Invalid port in Ollama URL '{}'.", url))
-            })?,
-        ),
-        _ => (host_port.to_string(), 80),
-    };
-    if host.is_empty() {
-        return Err(RedactError::Config(format!(
-            "Invalid host in Ollama URL '{}'.",
-            url
-        )));
-    }
-    Ok(ParsedHttpUrl {
-        host,
-        port,
-        path: path.to_string(),
-    })
 }
 
 fn unix_timestamp_now() -> Result<u64> {
@@ -2920,18 +2119,6 @@ mod tests {
     fn resolve_openai_alias_to_default_target() {
         let entry = resolve_catalog_entry("openai").unwrap();
         assert_eq!(entry.target, OPENAI_PRIVACY_TARGET);
-    }
-
-    #[test]
-    fn resolve_apple_alias_to_default_target() {
-        let entry = resolve_catalog_entry("apple").unwrap();
-        assert_eq!(entry.target, APPLE_FOUNDATION_TARGET);
-    }
-
-    #[test]
-    fn resolve_ollama_alias_to_default_target() {
-        let entry = resolve_catalog_entry("ollama").unwrap();
-        assert_eq!(entry.target, OLLAMA_PRIVACY_TARGET);
     }
 
     #[test]

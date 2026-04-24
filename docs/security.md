@@ -62,16 +62,10 @@ guarantee.
 - The Rust-only default path keeps the original minimal, offline-by-default
   security posture.
 - Provider mode is an explicit adapter boundary with a larger runtime surface.
-- Apple, OpenAI, and Ollama adapters are optional lower-trust integrations, not
+- The OpenAI Privacy Filter adapter is an optional lower-trust integration, not
   equivalent to the core detector pipeline.
-- The Apple adapter is the lightest Mac-specific option because it uses the
-  system on-device model rather than downloading extra model weights.
-- The Apple adapter still sits outside the hardened core guarantee because it
-  depends on the system generative model runtime rather than the native Rust
-  detector pipeline.
-- The Ollama adapter is also an experimental generative-extraction path rather
-  than a native token-classification runtime, so it should not be treated as
-  equivalent in fidelity to the OpenAI Privacy Filter path.
+- Generative runtimes are not exposed as privacy-filter providers unless they
+  run a real detector with verified span output.
 - If a provider runtime crashes, hangs, or misclassifies text, that impacts the
   optional provider pass, not the default core scan path.
 

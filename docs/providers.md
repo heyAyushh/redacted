@@ -18,34 +18,29 @@ This document describes the optional provider subsystem behind
 
 `redacted` supports two selector forms:
 
-- Alias: `apple`
-- Exact target: `apple/foundation-v1`
 - Alias: `openai`
 - Exact target: `openai/privacy-filter-v1`
-- Alias: `ollama`
-- Exact target: `ollama/structured-v1`
 
 Aliases are onboarding shortcuts. They always resolve to a pinned exact target.
 Commands print the resolved target before they change local state.
 
 Current built-in mapping:
 
-- `apple -> apple/foundation-v1`
 - `openai -> openai/privacy-filter-v1`
-- `ollama -> ollama/structured-v1`
 
-Support tiers:
+Support tier:
 
-- `apple/foundation-v1` is the supported Apple-local system-model path.
 - `openai/privacy-filter-v1` is the supported token-span path.
-- `ollama/structured-v1` is an experimental generative-extraction path.
+
+Generative runtimes are intentionally not exposed as privacy-filter providers
+unless they run a real detector with verified span output.
 
 ## Commands
 
 ```bash
-redacted provider enable <provider-or-target> [--runtime-model <NAME>]
-redacted provider install <provider-or-target> [--runtime-model <NAME>]
-redacted provider use <provider-or-target> [--runtime-model <NAME>]
+redacted provider enable <provider-or-target>
+redacted provider install <provider-or-target>
+redacted provider use <provider-or-target>
 redacted provider current
 redacted provider list
 redacted provider verify [<provider-or-target> | --all]
@@ -55,23 +50,9 @@ redacted provider disable
 Human-friendly setup:
 
 ```bash
-redacted provider enable apple
 redacted provider enable openai
-redacted provider enable ollama --runtime-model qwen3-coder:30b
 redacted --privacy-filter --input logs/
 ```
-
-For Apple:
-
-- `apple` builds a small local Swift runner around Apple Foundation Models.
-- It requires macOS 26+ with Apple Intelligence enabled and the system model ready.
-- It does not download a separate model bundle during install.
-
-For Ollama:
-
-- `--runtime-model <NAME>` chooses the local Ollama model to use.
-- If you omit `--runtime-model` and there is exactly one local Ollama model, that model is used automatically.
-- If there are multiple local Ollama models, `enable` and `install` fail fast and ask you to choose one explicitly.
 
 ## State and Install Layout
 
@@ -89,18 +70,6 @@ Important files:
 
 - Active target: `active-provider.state`
 - Installed bundles: `providers/<provider>/<model>/...`
-
-Example bundle layout:
-
-```text
-<data-root>/providers/apple/foundation-v1/
-  bundle.state
-  verified.state
-  runtime/
-  runner/
-    apple_foundation_runner
-    apple_foundation_runner.swift
-```
 
 OpenAI bundle layout:
 
@@ -121,27 +90,15 @@ OpenAI bundle layout:
     ...
 ```
 
-Ollama bundle layout:
-
-```text
-<data-root>/providers/ollama/structured-v1/
-  bundle.state
-  verified.state
-  runtime/
-    ollama-runtime.state
-  runner/
-    ollama_privacy_runner.py
-```
-
 ## Integrity Verification
 
 The checked-in provider catalog pins:
 
 - adapter kind
-- package source URL when the target ships its own runtime bundle
+- package source URL
 - package source SHA-256
 - package source byte size
-- model artifact URLs when the target ships local model files
+- model artifact URLs
 - model artifact SHA-256 values
 - model artifact byte sizes
 - canonical label mapping
@@ -149,25 +106,14 @@ The checked-in provider catalog pins:
 `redacted provider install ...`:
 
 1. resolves the selector to a pinned exact target
-2. installs the adapter-specific runtime bundle
-3. verifies pinned artifacts when the target ships local runtime files
-4. verifies the local runtime state required by that adapter
-5. writes `verified.state`
+2. installs the OpenAI Privacy Filter runtime bundle
+3. verifies pinned package and model artifacts by size and SHA-256
+4. writes `verified.state`
 
 `redacted provider verify ...` re-hashes the installed artifacts again and
 refreshes `verified.state`.
 
 Normal scans with `--privacy-filter` do **not** download anything.
-
-Adapter-specific notes:
-
-- `apple/foundation-v1` installs a small local Swift runner and verifies the
-  built runner bundle in place. Runtime readiness is checked against the system
-  on-device model when the provider is enabled, used, or scanned.
-- `openai/privacy-filter-v1` installs a bundle-local OPF runtime plus pinned
-  model artifacts and verifies them by size and SHA-256.
-- `ollama/structured-v1` installs a small local runner plus runtime config and
-  verifies that the local Ollama API can serve the configured model.
 
 ## Active Provider State
 
@@ -213,23 +159,6 @@ Rules:
 - responses do not contain raw span text
 - `redacted` owns masking, reports, retain rules, except rules, and file writes
 
-Internally, adapters are free to do provider-specific translation. For example:
-
-- the Apple adapter asks the system on-device model for structured span output
-  and expands repeated exact matches across the same text
-- the OpenAI adapter converts OPF span output into the common span ABI
-- the Ollama adapter asks the local Ollama API for structured JSON and then
-  converts exact snippet matches into byte spans
-
-That distinction matters:
-
-- the Apple path uses the system on-device model and never ships extra model weights
-- the OpenAI path starts from a model built for token/span labeling
-- the Ollama path asks a generative model to emit structured JSON and then
-  reconstructs spans from exact substring matches
-- because of that, the Apple and Ollama paths are structured-extraction adapters, while the OpenAI path is the higher-fidelity token-span path
-- the Ollama path is still lower-trust and should be treated as experimental
-
 ## Canonical Label Mapping
 
 The built-in OpenAI target maps provider labels into stable `redacted`
@@ -249,17 +178,9 @@ detector names:
 Common failures and the next command to run:
 
 - No active provider:
-  - `redacted provider enable apple`
   - `redacted provider enable openai`
-- Apple Intelligence not enabled or system model not ready:
-  - enable Apple Intelligence in Settings, wait for the model to finish, then run `redacted provider use apple`
-- Want the Ollama-backed adapter instead:
-  - `redacted provider enable ollama --runtime-model qwen3-coder:30b`
 - Bundle installed but not active:
-  - `redacted provider use apple`
   - `redacted provider use openai`
-- Ollama API not running:
-  - start Ollama locally, then run `redacted provider enable ollama --runtime-model qwen3-coder:30b`
 - Bundle missing verification stamp:
   - `redacted provider verify openai`
 - Need to see what is installed:

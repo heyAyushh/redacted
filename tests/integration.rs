@@ -1,16 +1,8 @@
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 fn binary_path() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
@@ -150,210 +142,6 @@ fn add_fake_pdftotext_to_env(
         format!("{}:{}", bin_dir.to_string_lossy(), current_path),
     ));
     Ok(())
-}
-
-struct FakeOllamaServer {
-    base_url: String,
-    address: String,
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl FakeOllamaServer {
-    fn start(initial_models: &[&str]) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let models = Arc::new(Mutex::new(
-            initial_models
-                .iter()
-                .map(|model| model.to_string())
-                .collect::<Vec<_>>(),
-        ));
-        let stop_flag = Arc::clone(&stop);
-        let model_state = Arc::clone(&models);
-        let handle = thread::spawn(move || {
-            while !stop_flag.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let model_state = Arc::clone(&model_state);
-                        thread::spawn(move || {
-                            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                            let _ = handle_fake_ollama_connection(&mut stream, &model_state);
-                        });
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        Self {
-            base_url: format!("http://{}/api", address),
-            address: address.to_string(),
-            stop,
-            handle: Some(handle),
-        }
-    }
-}
-
-impl Drop for FakeOllamaServer {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        let _ = TcpStream::connect(&self.address).and_then(|stream| {
-            stream.shutdown(Shutdown::Both)?;
-            Ok(())
-        });
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-fn handle_fake_ollama_connection(
-    stream: &mut TcpStream,
-    model_state: &Arc<Mutex<Vec<String>>>,
-) -> std::io::Result<()> {
-    let request = match read_http_request(stream) {
-        Ok(request) => request,
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    let mut parts = request
-        .header
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let path = parts.next().unwrap_or_default();
-
-    let (status, body) = match (method, path) {
-        ("GET", "/api/tags") => (200, fake_ollama_tags_response(model_state)),
-        ("POST", "/api/pull") => {
-            if let Some(model) = extract_json_string(&request.body, "model") {
-                let mut models = model_state.lock().unwrap();
-                if !models.iter().any(|existing| existing == &model) {
-                    models.push(model);
-                }
-            }
-            (200, "{\"status\":\"success\"}".to_string())
-        }
-        ("POST", "/api/generate") => (200, fake_ollama_generate_response(&request.body)),
-        _ => (404, "{\"error\":\"not found\"}".to_string()),
-    };
-
-    let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status,
-        if status == 200 { "OK" } else { "Not Found" },
-        body.len(),
-        body
-    );
-    stream.write_all(response.as_bytes())?;
-    stream.flush()?;
-    Ok(())
-}
-
-struct FakeHttpRequest {
-    header: String,
-    body: String,
-}
-
-fn read_http_request(stream: &mut TcpStream) -> std::io::Result<FakeHttpRequest> {
-    let mut buffer = Vec::new();
-    let mut temp = [0u8; 4096];
-    let header_end = loop {
-        let bytes_read = stream.read(&mut temp)?;
-        if bytes_read == 0 {
-            break None;
-        }
-        buffer.extend_from_slice(&temp[..bytes_read]);
-        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-            break Some(position + 4);
-        }
-    }
-    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing headers"))?;
-
-    let header = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-    let content_length = header
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.eq_ignore_ascii_case("content-length") {
-                value.trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-
-    while buffer.len() < header_end + content_length {
-        let bytes_read = stream.read(&mut temp)?;
-        if bytes_read == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&temp[..bytes_read]);
-    }
-
-    let body_bytes = &buffer[header_end..std::cmp::min(buffer.len(), header_end + content_length)];
-    Ok(FakeHttpRequest {
-        header,
-        body: String::from_utf8_lossy(body_bytes).to_string(),
-    })
-}
-
-fn fake_ollama_tags_response(model_state: &Arc<Mutex<Vec<String>>>) -> String {
-    let models = model_state.lock().unwrap();
-    let rendered = models
-        .iter()
-        .map(|model| format!("{{\"name\":\"{}\",\"model\":\"{}\"}}", model, model))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{{\"models\":[{}]}}", rendered)
-}
-
-fn fake_ollama_generate_response(request_body: &str) -> String {
-    let mut spans = Vec::new();
-    if request_body.contains("Alice") {
-        spans.push("{\"label\":\"private_person\",\"text\":\"Alice\"}".to_string());
-    }
-    if request_body.contains("John Smith") {
-        spans.push("{\"label\":\"private_person\",\"text\":\"John Smith\"}".to_string());
-    }
-    if request_body.contains("123 Main Street, Springfield") {
-        spans.push(
-            "{\"label\":\"private_address\",\"text\":\"123 Main Street, Springfield\"}".to_string(),
-        );
-    }
-    if request_body.contains("1990-01-02") {
-        spans.push("{\"label\":\"private_date\",\"text\":\"1990-01-02\"}".to_string());
-    }
-    let payload = format!("{{\"spans\":[{}]}}", spans.join(","));
-    format!(
-        "{{\"model\":\"qwen3-coder:30b\",\"response\":{},\"done\":true}}",
-        json_string(&payload)
-    )
-}
-
-fn extract_json_string(body: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{}\":\"", key);
-    let start = body.find(&needle)? + needle.len();
-    let rest = &body[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn json_string(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n");
-    format!("\"{}\"", escaped)
 }
 
 #[cfg(unix)]
@@ -539,7 +327,6 @@ fn provider_enable_help_flag() {
     let (_, stderr, code) = run(&["provider", "enable", "--help"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("redacted provider enable"));
-    assert!(stderr.contains("apple/foundation-v1"));
     assert!(stderr.contains("openai/privacy-filter-v1"));
 }
 
@@ -613,7 +400,6 @@ fn provider_current_without_active_shows_onboarding() {
     let (stdout, _, code) = run_with_env(&["provider", "current"], &envs);
     assert_eq!(code, 0);
     assert!(stdout.contains("No active provider configured"));
-    assert!(stdout.contains("redacted provider enable apple"));
     assert!(stdout.contains("redacted provider enable openai"));
 }
 
@@ -672,47 +458,6 @@ fn provider_enable_alias_reuses_verified_bundle() {
 
 #[cfg(unix)]
 #[test]
-fn provider_enable_ollama_alias_installs_and_activates() {
-    let (_config_root, data_root, mut envs) = provider_env("provider_enable_ollama");
-    let server = FakeOllamaServer::start(&["qwen3-coder:30b"]);
-    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
-
-    let (stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
-    assert_eq!(code, 0, "stderr: {}", stderr);
-    assert!(stdout.contains("resolved target: ollama/structured-v1"));
-    assert!(stdout.contains("active: yes"));
-    assert!(stdout.contains("runtime model: qwen3-coder:30b"));
-
-    let bundle_root = data_root
-        .join("providers")
-        .join("ollama")
-        .join("structured-v1");
-    assert!(bundle_root.join("bundle.state").exists());
-    assert!(bundle_root
-        .join("runtime")
-        .join("ollama-runtime.state")
-        .exists());
-    assert!(bundle_root
-        .join("runner")
-        .join("ollama_privacy_runner.py")
-        .exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn provider_enable_ollama_requires_runtime_model_when_multiple_exist() {
-    let (_config_root, _data_root, mut envs) = provider_env("provider_enable_ollama_many");
-    let server = FakeOllamaServer::start(&["qwen3-coder:30b", "llama3.2:latest"]);
-    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
-
-    let (_stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
-    assert_eq!(code, 2, "stderr: {}", stderr);
-    assert!(stderr.contains("Multiple local Ollama models are available"));
-    assert!(stderr.contains("--runtime-model"));
-}
-
-#[cfg(unix)]
-#[test]
 fn provider_list_shows_aliases_and_install_state() {
     let (config_root, data_root, envs) = provider_env("provider_list");
     install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
@@ -720,14 +465,9 @@ fn provider_list_shows_aliases_and_install_state() {
     let (stdout, _, code) = run_with_env(&["provider", "list"], &envs);
     assert_eq!(code, 0);
     assert!(stdout.contains("Aliases:"));
-    assert!(stdout.contains("apple -> apple/foundation-v1"));
     assert!(stdout.contains("openai -> openai/privacy-filter-v1"));
-    assert!(stdout.contains("ollama -> ollama/structured-v1"));
     assert!(stdout.contains("support=supported"));
     assert!(stdout.contains("mode=token-span"));
-    assert!(stdout.contains("mode=structured-extraction"));
-    assert!(stdout.contains("support=experimental"));
-    assert!(stdout.contains("mode=generative-extraction"));
     assert!(stdout.contains("installed=yes"));
     assert!(stdout.contains("active=yes"));
 }
@@ -768,7 +508,6 @@ fn privacy_filter_requires_active_provider() {
     );
     assert_eq!(code, 2);
     assert!(stderr.contains("No active privacy-filter provider is configured"));
-    assert!(stderr.contains("redacted provider enable apple"));
     assert!(stderr.contains("redacted provider enable openai"));
 }
 
@@ -866,29 +605,6 @@ fn privacy_filter_reports_invalid_runner_json() {
     );
     assert_eq!(code, 1);
     assert!(stderr.contains("Invalid provider response JSON"));
-}
-
-#[cfg(unix)]
-#[test]
-fn privacy_filter_works_with_ollama_provider() {
-    let (_config_root, _data_root, mut envs) = provider_env("privacy_ollama_provider");
-    let server = FakeOllamaServer::start(&["qwen3-coder:30b"]);
-    envs.push(("REDACTED_OLLAMA_BASE_URL".into(), server.base_url.clone()));
-
-    let (_stdout, stderr, code) = run_with_env(&["provider", "enable", "ollama"], &envs);
-    assert_eq!(code, 0, "stderr: {}", stderr);
-
-    let (stdout, stderr, code) = run_with_env(
-        &[
-            "--text",
-            "John Smith lives at 123 Main Street, Springfield.",
-            "--privacy-filter",
-        ],
-        &envs,
-    );
-    assert_eq!(code, 0, "stderr: {}", stderr);
-    assert!(stdout.contains("[REDACTED:PRIVATE_PERSON]"));
-    assert!(stdout.contains("[REDACTED:PRIVATE_ADDRESS]"));
 }
 
 #[test]

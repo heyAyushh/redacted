@@ -68,10 +68,7 @@ redacted --input secrets.log --output clean.log
 # Redact a directory tree
 redacted --input logs/ --output cleaned/ --summary
 
-# On a modern Mac, enable the Apple-local provider once
-redacted provider enable apple
-
-# Or enable the pinned OpenAI provider bundle
+# Enable the pinned OpenAI Privacy Filter bundle
 redacted provider enable openai
 
 # Run the extra provider-backed pass
@@ -164,21 +161,11 @@ The important trust boundary is:
 - Provider-backed privacy filtering is an **optional adapter mode** outside that hardened core path.
 - `redacted` still owns masking, reporting, retain rules, except rules, and file writes.
 
-Current built-in aliases and targets:
-
-- Alias: `apple`
-- Exact target: `apple/foundation-v1`
-- Adapter: local Apple Foundation Models runner built on the system on-device model
-- Support level: supported on macOS 26+ with Apple Intelligence
+Current built-in alias and target:
 
 - Alias: `openai`
 - Exact target: `openai/privacy-filter-v1`
 - Adapter: local OPF runner around the OpenAI Privacy Filter model
-
-- Alias: `ollama`
-- Exact target: `ollama/structured-v1`
-- Adapter: local Ollama API runner using structured JSON extraction
-- Support level: experimental
 
 ### What It Does
 
@@ -194,14 +181,8 @@ So the feature is an **extra pass**, not a second output mode and not a provider
 ### Human Onboarding
 
 ```bash
-# On a modern Mac, use the Apple-local system model with no bundle download
-redacted provider enable apple
-
-# Or install, verify, and activate the pinned OpenAI provider bundle
+# Install, verify, and activate the pinned OpenAI provider bundle
 redacted provider enable openai
-
-# Or use the Ollama-backed adapter
-redacted provider enable ollama --runtime-model qwen3-coder:30b
 
 # Scan with the extra pass enabled
 redacted --privacy-filter --input logs/
@@ -210,19 +191,7 @@ redacted --privacy-filter --input logs/
 The command prints the exact resolved target, for example:
 
 ```text
-resolved target: apple/foundation-v1
-```
-
-or:
-
-```text
 resolved target: openai/privacy-filter-v1
-```
-
-or:
-
-```text
-resolved target: ollama/structured-v1
 ```
 
 ### Switching Later
@@ -230,9 +199,7 @@ resolved target: ollama/structured-v1
 ```bash
 redacted provider list
 redacted provider current
-redacted provider use apple
 redacted provider use openai
-redacted provider use ollama --runtime-model qwen3-coder:30b
 redacted provider disable
 ```
 
@@ -242,15 +209,8 @@ redacted provider disable
 - Provider downloads happen only through `redacted provider install ...` or `redacted provider enable ...`.
 - If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
 - The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
-- `apple`, `openai`, and `ollama` are all adapter modes, not extensions of the hardened core guarantee.
-- The Apple target is the lightest Mac path because it uses the system on-device model instead of shipping another model bundle.
-- The Apple target requires macOS 26+ with Apple Intelligence enabled and the system model ready.
-- The Ollama target requires a running local Ollama API and uses a chosen local model rather than a hardcoded default model identity.
-- `redacted provider enable ollama` will auto-pick the model only when Ollama has exactly one local model; otherwise pass `--runtime-model <NAME>`.
-- `install` or `enable` may pull the configured Ollama model if it is not already available locally.
-- The Apple target is a supported structured-extraction path.
-- The OpenAI target is the supported token-span runtime.
-- The Ollama target is an experimental generative-extraction path, not a native token-span runtime like the OpenAI Privacy Filter path.
+- `openai/privacy-filter-v1` is the supported token-span runtime.
+- Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
 
 ---
 
@@ -364,11 +324,8 @@ redacted provider disable
 Examples:
 
 ```bash
-redacted provider enable apple
 redacted provider enable openai
-redacted provider install apple/foundation-v1
 redacted provider install openai/privacy-filter-v1
-redacted provider use apple
 redacted provider use openai
 redacted provider verify --all
 ```
