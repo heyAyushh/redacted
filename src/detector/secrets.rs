@@ -37,6 +37,32 @@ fn scan_while(text: &[u8], start: usize, pred: fn(u8) -> bool, max_len: usize) -
     end
 }
 
+fn is_high_entropy_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c == b'/'
+}
+
+fn is_assignment_keyword_terminator(c: u8) -> bool {
+    c.is_ascii_whitespace() || c == b'=' || c == b':'
+}
+
+fn shannon_entropy(sample: &[u8]) -> f64 {
+    let mut counts = [0usize; 256];
+    for &b in sample {
+        counts[b as usize] += 1;
+    }
+
+    let len = sample.len() as f64;
+    let mut entropy = 0.0;
+    for count in counts {
+        if count == 0 {
+            continue;
+        }
+        let p = count as f64 / len;
+        entropy -= p * p.log2();
+    }
+    entropy
+}
+
 // --- AWS Key Detector ---
 
 pub struct AwsKeyDetector;
@@ -630,6 +656,74 @@ impl Detector for GenericSecretAssignDetector {
     }
 }
 
+// --- High Entropy Detector ---
+// Uses keyword-plus-entropy heuristics to catch generic credentials that do not
+// match a more specific built-in detector. Requires a credential keyword plus a
+// long, diverse token value to avoid broad false positives.
+
+pub struct HighEntropyKeywordDetector;
+
+const HIGH_ENTROPY_KEYWORDS: [&str; 8] = [
+    "client_secret",
+    "access_key",
+    "auth_token",
+    "session_key",
+    "api_key",
+    "apikey",
+    "secret",
+    "token",
+];
+
+impl Detector for HighEntropyKeywordDetector {
+    fn name(&self) -> &'static str {
+        "HIGH_ENTROPY_SECRET"
+    }
+
+    fn category(&self) -> &'static str {
+        "secret"
+    }
+
+    fn detect(&self, text: &str) -> Vec<Finding> {
+        let mut findings = Vec::new();
+
+        for line in text.lines() {
+            let lower = line.to_ascii_lowercase();
+            let mut line_findings = Vec::new();
+            for kw in &HIGH_ENTROPY_KEYWORDS {
+                let mut search_from = 0;
+                while search_from < lower.len() {
+                    let Some(rel_pos) = lower[search_from..].find(kw) else {
+                        break;
+                    };
+                    let kw_pos = search_from + rel_pos;
+
+                    let keyword_end = kw_pos + kw.len();
+                    if keyword_end < lower.len()
+                        && !is_assignment_keyword_terminator(lower.as_bytes()[keyword_end])
+                    {
+                        search_from = keyword_end;
+                        continue;
+                    }
+
+                    if let Some(finding) = scan_entropy_assignment(text, line, kw_pos, self.name())
+                    {
+                        if !line_findings.iter().any(|existing: &Finding| {
+                            existing.end == finding.end && existing.start <= finding.start
+                        }) {
+                            line_findings.push(finding);
+                        }
+                    }
+                    search_from = keyword_end;
+                }
+            }
+            line_findings.sort_by_key(|finding| finding.start);
+            findings.extend(line_findings);
+        }
+
+        findings
+    }
+}
+
 // --- Shared helper: scan key=value or key: value patterns ---
 
 fn scan_key_value_pair(
@@ -682,6 +776,72 @@ fn scan_key_value_pair(
     Some(Finding {
         detector_name,
         category,
+        start: abs_start,
+        end: abs_end,
+        confidence: Confidence::Medium,
+        matched_len: abs_end - abs_start,
+    })
+}
+
+fn scan_entropy_assignment(
+    full_text: &str,
+    line: &str,
+    kw_pos: usize,
+    detector_name: &'static str,
+) -> Option<Finding> {
+    let after_kw = &line[kw_pos..];
+    let keyword_end = kw_pos
+        + after_kw
+            .find(|c: char| c.is_ascii_whitespace() || c == '=' || c == ':')
+            .unwrap_or(after_kw.len());
+    if keyword_end >= line.len() {
+        return None;
+    }
+
+    let mut value_part = line[keyword_end..].trim_start();
+    if let Some(rest) = value_part.strip_prefix('=') {
+        value_part = rest.trim_start();
+    } else if let Some(rest) = value_part.strip_prefix(':') {
+        value_part = rest.trim_start();
+    }
+    if value_part.is_empty() {
+        return None;
+    }
+
+    let value = if value_part.starts_with('"') || value_part.starts_with('\'') {
+        let quote = value_part.as_bytes()[0];
+        if let Some(end) = value_part[1..].find(|c: char| c as u8 == quote) {
+            &value_part[1..1 + end]
+        } else {
+            value_part.trim()
+        }
+    } else {
+        let end = value_part
+            .find(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == '#')
+            .unwrap_or(value_part.len());
+        &value_part[..end]
+    };
+
+    if value.len() < 18 || value.len() > 256 {
+        return None;
+    }
+    if !value.as_bytes().iter().all(|&c| is_high_entropy_char(c)) {
+        return None;
+    }
+
+    let entropy = shannon_entropy(value.as_bytes());
+    if entropy < 3.5 {
+        return None;
+    }
+
+    let line_offset = line.as_ptr() as usize - full_text.as_ptr() as usize;
+    let value_offset = value.as_ptr() as usize - full_text.as_ptr() as usize;
+    let abs_start = line_offset + kw_pos;
+    let abs_end = value_offset + value.len();
+
+    Some(Finding {
+        detector_name,
+        category: "secret",
         start: abs_start,
         end: abs_end,
         confidence: Confidence::Medium,
@@ -847,5 +1007,39 @@ mod tests {
         let text = "webhook=whsec_abcdefghijklmnopqrstuvwxyz";
         let findings = d.detect(text);
         assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn detect_high_entropy_secret_assignment() {
+        let d = HighEntropyKeywordDetector;
+        let text = "client_secret=Qx7rL9mN2pV4sT8wY1bC6dF";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].detector_name, "HIGH_ENTROPY_SECRET");
+        assert_eq!(&text[findings[0].start..findings[0].end], text);
+    }
+
+    #[test]
+    fn detect_multiple_high_entropy_secrets_on_same_line() {
+        let d = HighEntropyKeywordDetector;
+        let text = "token=Qx7rL9mN2pV4sT8wY1bC6dF secret=Yz8kLp3Vn6Qr1Tm9Sa4Bc7De";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(
+            &text[findings[0].start..findings[0].end],
+            "token=Qx7rL9mN2pV4sT8wY1bC6dF"
+        );
+        assert_eq!(
+            &text[findings[1].start..findings[1].end],
+            "secret=Yz8kLp3Vn6Qr1Tm9Sa4Bc7De"
+        );
+    }
+
+    #[test]
+    fn no_false_positive_low_entropy_secret_assignment() {
+        let d = HighEntropyKeywordDetector;
+        let text = "client_secret=aaaaaaaaaaaaaaaaaaaa";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 0);
     }
 }

@@ -17,9 +17,29 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExceptRuleSelector {
+    Detector(String),
+    Literal(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExceptSubcommand {
+    Add(ExceptRuleSelector),
+    Remove(ExceptRuleSelector),
+    List,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExceptArgs {
+    pub file: Option<String>,
+    pub command: Option<ExceptSubcommand>,
+}
+
 /// Parsed CLI arguments. All fields are explicit — no hidden state.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
+    pub except: Option<ExceptArgs>,
     pub text: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
@@ -30,6 +50,11 @@ pub struct CliArgs {
     pub patterns: Vec<(String, String)>,
     pub allow_patterns: Vec<String>,
     pub deny_patterns: Vec<String>,
+    pub retain_detectors: Vec<String>,
+    pub retain_literals: Vec<String>,
+    pub except_detectors: Vec<String>,
+    pub except_literals: Vec<String>,
+    pub except_file: Option<String>,
     pub dry_run: bool,
     pub fail_on_find: bool,
     pub summary: bool,
@@ -50,6 +75,7 @@ pub struct CliArgs {
 impl Default for CliArgs {
     fn default() -> Self {
         Self {
+            except: None,
             text: None,
             input: None,
             output: None,
@@ -60,6 +86,11 @@ impl Default for CliArgs {
             patterns: Vec::new(),
             allow_patterns: Vec::new(),
             deny_patterns: Vec::new(),
+            retain_detectors: Vec::new(),
+            retain_literals: Vec::new(),
+            except_detectors: Vec::new(),
+            except_literals: Vec::new(),
+            except_file: None,
             dry_run: false,
             fail_on_find: false,
             summary: false,
@@ -85,6 +116,7 @@ pub fn print_help() {
 
 USAGE:
   redacted [OPTIONS]
+  redacted except [--file <PATH>] <add|remove|list> [--detector <NAME> | --literal <VALUE>]
   echo "secret text" | redacted
   redacted --text "email me at user@example.com"
   redacted --input secrets.txt
@@ -105,6 +137,15 @@ DETECTORS:
   --pattern <NAME=REGEX>  Add custom pattern (may be repeated)
   --allow-pattern <NAME>  Enable only this detector (may be repeated)
   --deny-pattern <NAME>   Disable this detector (may be repeated)
+  --retain-detector <NAME>
+                        Detect and report this detector, but keep the matched value in output
+  --retain-literal <VALUE>
+                        Keep this exact matched value in output (may be repeated)
+  --except-detector <NAME>
+                        Ignore findings from this detector during this scan (may be repeated)
+  --except-literal <VALUE>
+                        Ignore this exact matched value during this scan (may be repeated)
+  --except-file <PATH>   Load persisted retain rules from file
   --replacement <STRING>  Custom replacement (default: [REDACTED:<TYPE>])
 
 TRAVERSAL:
@@ -139,7 +180,11 @@ EXAMPLES:
   redacted --input secrets.txt --output redacted.txt
   redacted --input logs/ --output cleaned/ --summary
   redacted --input .env --fail-on-find --dry-run
-  redacted --input repo/ --output repo-clean/ --report-json"#,
+  redacted --input repo/ --output repo-clean/ --report-json
+  redacted --text "user@example.com" --retain-detector EMAIL
+  redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
+  redacted except add --detector EMAIL
+  redacted except list"#,
         version = VERSION,
     );
 }
@@ -156,6 +201,10 @@ pub fn parse_args() -> Result<CliArgs> {
 }
 
 pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
+    if matches!(args.first().map(String::as_str), Some("except")) {
+        return parse_except_args(&args[1..]);
+    }
+
     let mut cli = CliArgs::default();
     let mut i = 0;
 
@@ -204,6 +253,30 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                 i += 1;
                 cli.deny_patterns
                     .push(require_value(args, i, "--deny-pattern")?);
+            }
+            "--retain-detector" => {
+                i += 1;
+                cli.retain_detectors
+                    .push(require_value(args, i, "--retain-detector")?);
+            }
+            "--retain-literal" => {
+                i += 1;
+                cli.retain_literals
+                    .push(require_value(args, i, "--retain-literal")?);
+            }
+            "--except-detector" => {
+                i += 1;
+                cli.except_detectors
+                    .push(require_value(args, i, "--except-detector")?);
+            }
+            "--except-literal" => {
+                i += 1;
+                cli.except_literals
+                    .push(require_value(args, i, "--except-literal")?);
+            }
+            "--except-file" => {
+                i += 1;
+                cli.except_file = Some(require_value(args, i, "--except-file")?);
             }
             "--dry-run" => cli.dry_run = true,
             "--fail-on-find" => cli.fail_on_find = true,
@@ -288,6 +361,87 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     Ok(cli)
 }
 
+fn parse_except_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let mut except = ExceptArgs {
+        file: None,
+        command: None,
+    };
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                cli.show_help = true;
+                return Ok(cli);
+            }
+            "--file" => {
+                i += 1;
+                except.file = Some(require_value(args, i, "--file")?);
+            }
+            "list" => {
+                except.command = Some(ExceptSubcommand::List);
+            }
+            "add" => {
+                except.command = Some(ExceptSubcommand::Add(parse_except_selector(args, &mut i)?));
+            }
+            "remove" => {
+                except.command = Some(ExceptSubcommand::Remove(parse_except_selector(
+                    args, &mut i,
+                )?));
+            }
+            other => {
+                return Err(RedactError::Usage(format!(
+                    "Unknown except argument '{}'\n  redacted except list\n  redacted except add --detector EMAIL",
+                    other
+                )));
+            }
+        }
+        i += 1;
+    }
+
+    if except.command.is_none() {
+        return Err(RedactError::Usage(
+            "Missing except command.\n  redacted except list\n  redacted except add --detector EMAIL".into(),
+        ));
+    }
+
+    cli.except = Some(except);
+    Ok(cli)
+}
+
+fn parse_except_selector(args: &[String], i: &mut usize) -> Result<ExceptRuleSelector> {
+    *i += 1;
+    if *i >= args.len() {
+        return Err(RedactError::Usage(
+            "Except command requires --detector <NAME> or --literal <VALUE>.".into(),
+        ));
+    }
+
+    match args[*i].as_str() {
+        "--detector" => {
+            *i += 1;
+            Ok(ExceptRuleSelector::Detector(require_value(
+                args,
+                *i,
+                "--detector",
+            )?))
+        }
+        "--literal" => {
+            *i += 1;
+            Ok(ExceptRuleSelector::Literal(require_value(
+                args,
+                *i,
+                "--literal",
+            )?))
+        }
+        other => Err(RedactError::Usage(format!(
+            "Unknown except selector '{}'\n  redacted except add --detector EMAIL",
+            other
+        ))),
+    }
+}
+
 fn require_value(args: &[String], i: usize, flag: &str) -> Result<String> {
     if i >= args.len() {
         return Err(RedactError::Usage(format!(
@@ -353,6 +507,39 @@ mod tests {
     fn parse_pattern() {
         let cli = parse_args_from(&args(&["--pattern", "KEY=sk_[a-z]+"])).unwrap();
         assert_eq!(cli.patterns, vec![("KEY".into(), "sk_[a-z]+".into())]);
+    }
+
+    #[test]
+    fn parse_retain_and_except_flags() {
+        let cli = parse_args_from(&args(&[
+            "--retain-detector",
+            "EMAIL",
+            "--retain-literal",
+            "user@example.com",
+            "--except-detector",
+            "PHONE",
+            "--except-literal",
+            "noreply@example.com",
+        ]))
+        .unwrap();
+        assert_eq!(cli.retain_detectors, vec!["EMAIL"]);
+        assert_eq!(cli.retain_literals, vec!["user@example.com"]);
+        assert_eq!(cli.except_detectors, vec!["PHONE"]);
+        assert_eq!(cli.except_literals, vec!["noreply@example.com"]);
+    }
+
+    #[test]
+    fn parse_except_subcommand() {
+        let cli = parse_args_from(&args(&["except", "add", "--detector", "EMAIL"])).unwrap();
+        assert_eq!(
+            cli.except,
+            Some(ExceptArgs {
+                file: None,
+                command: Some(ExceptSubcommand::Add(ExceptRuleSelector::Detector(
+                    "EMAIL".into()
+                ))),
+            })
+        );
     }
 
     #[test]
