@@ -331,7 +331,11 @@ impl Detector for DatabaseUrlDetector {
             for scheme in &schemes {
                 if let Some(pos) = lower[search_start..].find(scheme) {
                     let abs = search_start + pos;
-                    if earliest.is_none() || abs < earliest.unwrap().0 {
+                    if earliest
+                        .as_ref()
+                        .map(|(earliest_abs, _)| abs < *earliest_abs)
+                        .unwrap_or(true)
+                    {
                         earliest = Some((abs, scheme.len()));
                     }
                 }

@@ -2188,19 +2188,17 @@ fn resolve_ollama_runtime_model(
         ));
     }
     let installed_models = list_ollama_models(base_url)?;
-    if installed_models.len() == 1 {
-        return Ok(installed_models.into_iter().next().unwrap());
-    }
-    if installed_models.is_empty() {
-        return Err(RedactError::Usage(
+    match installed_models.as_slice() {
+        [model_name] => Ok(model_name.clone()),
+        [] => Err(RedactError::Usage(
             "No local Ollama models are available.\nInstall one first, then run:\n  redacted provider enable ollama --runtime-model qwen3-coder:30b".into(),
-        ));
+        )),
+        _ => Err(RedactError::Usage(format!(
+            "Multiple local Ollama models are available at {}.\nChoose one with:\n  redacted provider enable ollama --runtime-model <MODEL>\nInstalled models: {}",
+            base_url,
+            installed_models.join(", ")
+        ))),
     }
-    Err(RedactError::Usage(format!(
-        "Multiple local Ollama models are available at {}.\nChoose one with:\n  redacted provider enable ollama --runtime-model <MODEL>\nInstalled models: {}",
-        base_url,
-        installed_models.join(", ")
-    )))
 }
 
 fn ensure_ollama_model_available(
