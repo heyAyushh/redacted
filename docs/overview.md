@@ -58,6 +58,9 @@ redacted --input src/ --dry-run --fail-on-find
 # Install and enable the pinned OpenAI Privacy Filter provider
 redacted provider enable openai
 
+# Or use the experimental local MLX runtime for the same filter
+redacted provider enable mlx
+
 # Run the extra provider-backed pass
 redacted --privacy-filter --input logs/
 
@@ -84,9 +87,10 @@ redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adap
 - The default Rust-only detector path is the hardened core of the tool.
 - Provider mode is optional and off by default.
 - Document-adapter mode is optional and off by default.
-- Provider mode adds an adapter boundary around the OpenAI Privacy Filter bundle.
+- Provider mode adds an adapter boundary around the selected OpenAI Privacy Filter bundle.
 - Document-adapter mode adds an adapter boundary around extraction runtimes such as local `pdftotext`.
 - `redacted` still owns the final redaction output, reports, and file writes even when `--privacy-filter` is enabled.
 - `redacted` still owns the detector/policy/redaction/report pipeline when `--document-adapter` is enabled.
-- The OpenAI path is the supported token-span runtime.
+- The OpenAI OPF path is the supported token-span runtime.
+- The MLX path is experimental local inference for the converted OpenAI Privacy Filter model.
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output.

@@ -18,8 +18,12 @@ const PROVIDER_BUNDLES_DIR: &str = "providers";
 const PROVIDER_RUNNER_DIR: &str = "runner";
 const PROVIDER_MODEL_DIR: &str = "model";
 const OPENAI_PROVIDER_ALIAS: &str = "openai";
+const MLX_PROVIDER_ALIAS: &str = "mlx";
 const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
+const OPENAI_PRIVACY_MLX_TARGET: &str = "openai/privacy-filter-v1-mlx";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
+const MLX_RUNNER_SCRIPT_NAME: &str = "mlx_privacy_runner.py";
+const MLX_EMBEDDINGS_PACKAGE: &str = "mlx-embeddings==0.1.0";
 const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
 const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
@@ -27,12 +31,14 @@ const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderAdapterKind {
     OpenAiOpfLocal,
+    OpenAiMlxLocal,
 }
 
 impl ProviderAdapterKind {
     fn manifest_name(self) -> &'static str {
         match self {
             Self::OpenAiOpfLocal => "openai-opf-local",
+            Self::OpenAiMlxLocal => "openai-mlx-local",
         }
     }
 
@@ -43,20 +49,30 @@ impl ProviderAdapterKind {
     fn trust_level(self) -> &'static str {
         match self {
             Self::OpenAiOpfLocal => "optional-external",
+            Self::OpenAiMlxLocal => "optional-external",
         }
     }
 
     fn support_tier(self) -> &'static str {
         match self {
             Self::OpenAiOpfLocal => "supported",
+            Self::OpenAiMlxLocal => "experimental",
         }
     }
 
     fn detection_mode(self) -> &'static str {
         match self {
             Self::OpenAiOpfLocal => "token-span",
+            Self::OpenAiMlxLocal => "token-span-mlx",
         }
     }
+}
+
+fn adapter_uses_virtualenv(adapter: ProviderAdapterKind) -> bool {
+    matches!(
+        adapter,
+        ProviderAdapterKind::OpenAiOpfLocal | ProviderAdapterKind::OpenAiMlxLocal
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -232,7 +248,58 @@ const OPENAI_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     labels: &OPENAI_LABEL_MAPPINGS,
 };
 
-const PROVIDER_CATALOG: [ProviderCatalogEntry; 1] = [OPENAI_PROVIDER_ENTRY];
+const MLX_MODEL_ARTIFACTS: [ArtifactSpec; 6] = [
+    ArtifactSpec {
+        bundle_rel: "model/config.json",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/config.json?download=1",
+        size_bytes: 4354,
+        sha256: "00aaaa67981f8ca724bfd72b00414f5a2864c367538f9fe85f3f49282c2f6d7b",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/model.safetensors",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/model.safetensors?download=1",
+        size_bytes: 790_435_150,
+        sha256: "0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/model.safetensors.index.json",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/model.safetensors.index.json?download=1",
+        size_bytes: 20_455,
+        sha256: "bb530de716429568ba7e973e400561ee7983d76f56f62095188f0d4fa87f0e49",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/tokenizer.json",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/tokenizer.json?download=1",
+        size_bytes: 27_868_174,
+        sha256: "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/tokenizer_config.json",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/tokenizer_config.json?download=1",
+        size_bytes: 283,
+        sha256: "490477def5405c66ae43cf65756976a4c9963b4c20c148a392eb4c3a833b1725",
+    },
+    ArtifactSpec {
+        bundle_rel: "model/viterbi_calibration.json",
+        url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/viterbi_calibration.json?download=1",
+        size_bytes: 372,
+        sha256: "bbc8611ef08a55ed72d64856cbbbb9a91db8dfa881f0a92e2afbad6e4bbc775a",
+    },
+];
+
+const MLX_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
+    target: OPENAI_PRIVACY_MLX_TARGET,
+    provider: "openai",
+    model: "privacy-filter-v1-mlx",
+    aliases: &[MLX_PROVIDER_ALIAS],
+    legacy_targets: &[],
+    adapter: ProviderAdapterKind::OpenAiMlxLocal,
+    package: None,
+    model_artifacts: &MLX_MODEL_ARTIFACTS,
+    labels: &OPENAI_LABEL_MAPPINGS,
+};
+
+const PROVIDER_CATALOG: [ProviderCatalogEntry; 2] = [OPENAI_PROVIDER_ENTRY, MLX_PROVIDER_ENTRY];
 
 const OPENAI_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import argparse
@@ -296,6 +363,188 @@ def main() -> int:
                 "request_id": request_id,
                 "target": args.target,
                 "spans": spans,
+            }
+        except Exception as exc:
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "error": f"runtime error: {exc.__class__.__name__}",
+                "spans": [],
+            }
+
+        sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"#;
+
+const MLX_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
+import argparse
+import json
+import pathlib
+import sys
+
+import mlx.core as mx
+import mlx.nn as nn
+from mlx_lm.models.gpt_oss import GptOssMoeModel, Model as GptOssModel, ModelArgs
+from mlx_lm.utils import load_model
+from transformers import AutoTokenizer
+
+
+class OpenAIPrivacyFilterModel(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.args = args
+        self.model_type = args.model_type
+        self.model = GptOssMoeModel(args)
+        self.score = nn.Linear(args.hidden_size, 33, bias=True)
+
+    def __call__(self, input_ids: mx.array, attention_mask=None):
+        del attention_mask
+        return self.score(self.model(input_ids))
+
+    def sanitize(self, weights):
+        return GptOssModel(self.args).sanitize(weights)
+
+    @property
+    def layers(self):
+        return self.model.layers
+
+    @property
+    def quant_predicate(self):
+        return GptOssModel(self.args).quant_predicate
+
+
+def get_model_classes(config):
+    config["model_type"] = "gpt_oss"
+    if "rope_parameters" in config:
+        rope_scaling = dict(config["rope_parameters"])
+        if "rope_type" in rope_scaling:
+            rope_scaling["type"] = rope_scaling.pop("rope_type")
+        config["rope_scaling"] = rope_scaling
+    return OpenAIPrivacyFilterModel, ModelArgs
+
+
+def build_char_to_byte_offsets(text: str) -> list[int]:
+    offsets = [0]
+    total = 0
+    for char in text:
+        total += len(char.encode("utf-8"))
+        offsets.append(total)
+    return offsets
+
+
+def normalize_label(label: str) -> str:
+    if label == "O":
+        return "O"
+    if "-" not in label:
+        return label
+    return label.split("-", 1)[1]
+
+
+def spans_from_predictions(text: str, offsets: list[tuple[int, int]], labels: list[str]) -> list[dict]:
+    byte_offsets = build_char_to_byte_offsets(text)
+    spans = []
+    active_label = None
+    active_start = None
+    active_end = None
+
+    def finish_active():
+        nonlocal active_label, active_start, active_end
+        if active_label is not None and active_start is not None and active_end is not None:
+            spans.append(
+                {
+                    "label": active_label,
+                    "start": byte_offsets[active_start],
+                    "end": byte_offsets[active_end],
+                }
+            )
+        active_label = None
+        active_start = None
+        active_end = None
+
+    for (start, end), raw_label in zip(offsets, labels):
+        if start == end:
+            continue
+        label = normalize_label(raw_label)
+        prefix = raw_label.split("-", 1)[0] if "-" in raw_label else raw_label
+        if label == "O":
+            finish_active()
+            continue
+        if prefix in ("B", "S") or active_label != label:
+            finish_active()
+            active_label = label
+            active_start = start
+            active_end = end
+            if prefix == "S":
+                finish_active()
+                continue
+        else:
+            active_end = end
+        if prefix == "E":
+            finish_active()
+
+    finish_active()
+    return spans
+
+
+def predict_spans(model, tokenizer, id_to_label: dict[int, str], text: str) -> list[dict]:
+    encoded = tokenizer(
+        text,
+        return_offsets_mapping=True,
+        truncation=True,
+    )
+    offsets = encoded.pop("offset_mapping")
+    mlx_inputs = {key: mx.array([value]) for key, value in encoded.items()}
+    output = model(
+        mlx_inputs["input_ids"],
+        attention_mask=mlx_inputs.get("attention_mask"),
+    )
+    logits = getattr(output, "logits", output[0] if isinstance(output, (tuple, list)) else output)
+    predictions = mx.argmax(logits, axis=-1).tolist()[0]
+    labels = [id_to_label[int(index)] for index in predictions]
+    return spans_from_predictions(text, offsets, labels)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    args = parser.parse_args()
+
+    checkpoint = pathlib.Path(args.checkpoint)
+    model, config = load_model(
+        checkpoint,
+        get_model_classes=get_model_classes,
+        strict=True,
+        lazy=False,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    id_to_label = {int(key): value for key, value in config["id2label"].items()}
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        request_id = "unknown"
+        try:
+            payload = json.loads(line)
+            request_id = str(payload.get("request_id", "unknown"))
+            text = payload.get("text")
+            schema_version = payload.get("schema_version")
+            if schema_version != 1 or not isinstance(text, str):
+                raise ValueError("invalid request schema")
+            response = {
+                "schema_version": 1,
+                "request_id": request_id,
+                "target": args.target,
+                "spans": predict_spans(model, tokenizer, id_to_label, text),
             }
         except Exception as exc:
             response = {
@@ -474,6 +723,7 @@ pub fn start_active_session() -> Result<ProviderSession> {
         ))
     })?;
     let bundle = bundle_root_for_entry(entry)?;
+    refresh_bundle_runner(entry, &bundle)?;
     ensure_ready_bundle(entry, &bundle)?;
 
     let manifest = load_bundle_manifest(&bundle_manifest_path(&bundle))?;
@@ -715,7 +965,10 @@ fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome
         ))
     })?;
 
-    let install_result = install_openai_bundle(entry, &temp_bundle);
+    let install_result = match entry.adapter {
+        ProviderAdapterKind::OpenAiOpfLocal => install_openai_bundle(entry, &temp_bundle),
+        ProviderAdapterKind::OpenAiMlxLocal => install_mlx_bundle(entry, &temp_bundle),
+    };
 
     if let Err(error) = install_result {
         let _ = fs::remove_dir_all(&temp_bundle);
@@ -743,7 +996,7 @@ fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome
             error
         ))
     })?;
-    if entry.adapter == ProviderAdapterKind::OpenAiOpfLocal {
+    if adapter_uses_virtualenv(entry.adapter) {
         repair_bundle_runtime_paths(&bundle_root)?;
     }
 
@@ -760,10 +1013,10 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
             entry.target, entry.target
         )));
     }
-    if entry.adapter == ProviderAdapterKind::OpenAiOpfLocal {
+    if adapter_uses_virtualenv(entry.adapter) {
         repair_bundle_runtime_paths(bundle_root)?;
     }
-    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    let mut manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
     if manifest.schema_version != PROVIDER_SCHEMA_VERSION
         || !manifest_matches_entry(&manifest, entry)
         || manifest.adapter != entry.adapter.manifest_name()
@@ -773,6 +1026,7 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
             entry.target
         )));
     }
+    refresh_bundle_runner_with_manifest(entry, bundle_root, &mut manifest)?;
     let runner_path = bundle_root.join(&manifest.runner_rel);
     if !runner_path.is_file() {
         return Err(RedactError::Config(format!(
@@ -813,6 +1067,46 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
     Ok(())
 }
 
+fn refresh_bundle_runner(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Result<()> {
+    if !bundle_root.exists() {
+        return Ok(());
+    }
+    let mut manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    if manifest.schema_version != PROVIDER_SCHEMA_VERSION
+        || !manifest_matches_entry(&manifest, entry)
+        || manifest.adapter != entry.adapter.manifest_name()
+    {
+        return Ok(());
+    }
+    refresh_bundle_runner_with_manifest(entry, bundle_root, &mut manifest)
+}
+
+fn refresh_bundle_runner_with_manifest(
+    entry: &'static ProviderCatalogEntry,
+    bundle_root: &Path,
+    manifest: &mut BundleManifest,
+) -> Result<()> {
+    let script = expected_runner_script(entry.adapter);
+    let expected_sha256 = sha256_hex_of_bytes(script.as_bytes());
+    if manifest.runner_sha256 == expected_sha256 {
+        return Ok(());
+    }
+    if manifest.entry_rel.is_none() {
+        return Ok(());
+    }
+    let runner_path = runner_integrity_path(bundle_root, manifest);
+    io_safe::atomic_write(&runner_path, script)?;
+    manifest.runner_sha256 = expected_sha256;
+    save_bundle_manifest(bundle_root, manifest)
+}
+
+fn expected_runner_script(adapter: ProviderAdapterKind) -> &'static str {
+    match adapter {
+        ProviderAdapterKind::OpenAiOpfLocal => OPENAI_RUNNER_SCRIPT,
+        ProviderAdapterKind::OpenAiMlxLocal => MLX_RUNNER_SCRIPT,
+    }
+}
+
 fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
     let package = entry.package.as_ref().ok_or_else(|| {
         RedactError::Config(format!(
@@ -846,6 +1140,48 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
         entry_rel: Some(
             Path::new(PROVIDER_RUNNER_DIR)
                 .join(OPENAI_RUNNER_SCRIPT_NAME)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        checkpoint_rel: PROVIDER_MODEL_DIR.into(),
+        runner_sha256,
+    };
+    save_bundle_manifest(temp_bundle, &manifest)?;
+    save_verified_state(
+        temp_bundle,
+        &VerifiedState {
+            schema_version: PROVIDER_SCHEMA_VERSION,
+            target: entry.target.into(),
+            verified_unix_seconds: unix_timestamp_now()?,
+        },
+    )?;
+    Ok(())
+}
+
+fn install_mlx_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
+    create_mlx_virtualenv(&temp_bundle.join("venv"))?;
+    install_pypi_package(temp_bundle, MLX_EMBEDDINGS_PACKAGE)?;
+
+    for artifact in entry.model_artifacts {
+        let path = temp_bundle.join(artifact.bundle_rel);
+        download_and_verify_artifact(artifact, &path)?;
+    }
+
+    let runner_path = temp_bundle
+        .join(PROVIDER_RUNNER_DIR)
+        .join(MLX_RUNNER_SCRIPT_NAME);
+    write_mlx_runner_script(&runner_path)?;
+    let runner_sha256 = sha256_hex_of_bytes(MLX_RUNNER_SCRIPT.as_bytes());
+    let manifest = BundleManifest {
+        schema_version: PROVIDER_SCHEMA_VERSION,
+        target: entry.target.to_string(),
+        provider: entry.provider.to_string(),
+        model: entry.model.to_string(),
+        adapter: entry.adapter.manifest_name().into(),
+        runner_rel: default_venv_python_rel().into(),
+        entry_rel: Some(
+            Path::new(PROVIDER_RUNNER_DIR)
+                .join(MLX_RUNNER_SCRIPT_NAME)
                 .to_string_lossy()
                 .into_owned(),
         ),
@@ -1481,7 +1817,16 @@ fn default_venv_python_rel() -> &'static str {
 
 fn create_virtualenv(venv_path: &Path) -> Result<()> {
     let python = system_python_command();
-    let output = Command::new(&python)
+    create_virtualenv_with_python(&python, venv_path)
+}
+
+fn create_mlx_virtualenv(venv_path: &Path) -> Result<()> {
+    let python = mlx_python_command()?;
+    create_virtualenv_with_python(&python, venv_path)
+}
+
+fn create_virtualenv_with_python(python: &str, venv_path: &Path) -> Result<()> {
+    let output = Command::new(python)
         .arg("-m")
         .arg("venv")
         .arg(venv_path)
@@ -1496,6 +1841,62 @@ fn create_virtualenv(venv_path: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn mlx_python_command() -> Result<String> {
+    if let Ok(python) = std::env::var(REDACTED_PROVIDER_PYTHON_OVERRIDE) {
+        if python_version_at_least(&python, 3, 10)? {
+            return Ok(python);
+        }
+        return Err(RedactError::Config(format!(
+            "MLX provider requires Python 3.10 or newer, but '{}' is older.",
+            python
+        )));
+    }
+
+    for candidate in ["python3.12", "python3.11", "python3.10", "python3"] {
+        if python_version_at_least(candidate, 3, 10).unwrap_or(false) {
+            return Ok(candidate.into());
+        }
+    }
+
+    Err(RedactError::Config(
+        "MLX provider requires Python 3.10 or newer. Install Python 3.10+ or set REDACTED_PROVIDER_PYTHON.".into(),
+    ))
+}
+
+fn python_version_at_least(python: &str, major: u32, minor: u32) -> Result<bool> {
+    let output = Command::new(python)
+        .arg("-c")
+        .arg("import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to check Python version for '{}': {}",
+                python, error
+            ))
+        })?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim();
+    let Some((actual_major, actual_minor)) = version.split_once('.') else {
+        return Ok(false);
+    };
+    let actual_major = actual_major.parse::<u32>().map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot parse Python major version '{}': {}",
+            actual_major, error
+        ))
+    })?;
+    let actual_minor = actual_minor.parse::<u32>().map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot parse Python minor version '{}': {}",
+            actual_minor, error
+        ))
+    })?;
+    Ok((actual_major, actual_minor) >= (major, minor))
 }
 
 fn install_package_from_archive(bundle_root: &Path, archive_path: &Path) -> Result<()> {
@@ -1524,8 +1925,38 @@ fn install_package_from_archive(bundle_root: &Path, archive_path: &Path) -> Resu
     Ok(())
 }
 
+fn install_pypi_package(bundle_root: &Path, package: &str) -> Result<()> {
+    let python = bundle_root.join(default_venv_python_rel());
+    let output = Command::new(&python)
+        .arg("-m")
+        .arg("pip")
+        .arg("install")
+        .arg("--disable-pip-version-check")
+        .arg("--no-input")
+        .arg(package)
+        .output()
+        .map_err(|error| {
+            RedactError::Config(format!(
+                "Failed to start pip install for '{}': {}",
+                package, error
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(RedactError::Config(format!(
+            "Provider package installation failed for '{}': {}",
+            package,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 fn write_openai_runner_script(path: &Path) -> Result<()> {
     io_safe::atomic_write(path, OPENAI_RUNNER_SCRIPT)
+}
+
+fn write_mlx_runner_script(path: &Path) -> Result<()> {
+    io_safe::atomic_write(path, MLX_RUNNER_SCRIPT)
 }
 
 fn system_python_command() -> String {
@@ -2119,6 +2550,13 @@ mod tests {
     fn resolve_openai_alias_to_default_target() {
         let entry = resolve_catalog_entry("openai").unwrap();
         assert_eq!(entry.target, OPENAI_PRIVACY_TARGET);
+    }
+
+    #[test]
+    fn resolve_mlx_alias_to_exact_runtime_target() {
+        let entry = resolve_catalog_entry("mlx").unwrap();
+        assert_eq!(entry.target, OPENAI_PRIVACY_MLX_TARGET);
+        assert_eq!(entry.adapter, ProviderAdapterKind::OpenAiMlxLocal);
     }
 
     #[test]

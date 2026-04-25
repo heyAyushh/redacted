@@ -161,11 +161,14 @@ The important trust boundary is:
 - Provider-backed privacy filtering is an **optional adapter mode** outside that hardened core path.
 - `redacted` still owns masking, reporting, retain rules, except rules, and file writes.
 
-Current built-in alias and target:
+Current built-in aliases and targets:
 
 - Alias: `openai`
 - Exact target: `openai/privacy-filter-v1`
-- Adapter: local OPF runner around the OpenAI Privacy Filter model
+- Adapter: supported local OPF runner around the OpenAI Privacy Filter model
+- Alias: `mlx`
+- Exact target: `openai/privacy-filter-v1-mlx`
+- Adapter: experimental Apple MLX runtime for the converted OpenAI Privacy Filter model
 
 ### What It Does
 
@@ -183,6 +186,9 @@ So the feature is an **extra pass**, not a second output mode and not a provider
 ```bash
 # Install, verify, and activate the pinned OpenAI provider bundle
 redacted provider enable openai
+
+# Or, on Apple Silicon, use the experimental MLX runtime for the same filter
+redacted provider enable mlx
 
 # Scan with the extra pass enabled
 redacted --privacy-filter --input logs/
@@ -210,6 +216,7 @@ redacted provider disable
 - If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
 - The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
 - `openai/privacy-filter-v1` is the supported token-span runtime.
+- `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned `mlx-community/openai-privacy-filter-4bit` conversion for local MLX inference.
 - Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
 
 ---
@@ -325,7 +332,9 @@ Examples:
 
 ```bash
 redacted provider enable openai
+redacted provider enable mlx
 redacted provider install openai/privacy-filter-v1
+redacted provider install openai/privacy-filter-v1-mlx
 redacted provider use openai
 redacted provider verify --all
 ```

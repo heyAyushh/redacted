@@ -62,8 +62,10 @@ guarantee.
 - The Rust-only default path keeps the original minimal, offline-by-default
   security posture.
 - Provider mode is an explicit adapter boundary with a larger runtime surface.
-- The OpenAI Privacy Filter adapter is an optional lower-trust integration, not
-  equivalent to the core detector pipeline.
+- Privacy Filter adapters are optional lower-trust integrations, not equivalent
+  to the core detector pipeline.
+- `openai/privacy-filter-v1` is the supported OPF runtime; `openai/privacy-filter-v1-mlx`
+  is an experimental local MLX runtime for the converted OpenAI Privacy Filter model.
 - Generative runtimes are not exposed as privacy-filter providers unless they
   run a real detector with verified span output.
 - If a provider runtime crashes, hangs, or misclassifies text, that impacts the

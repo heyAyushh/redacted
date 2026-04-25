@@ -466,10 +466,14 @@ fn provider_list_shows_aliases_and_install_state() {
     assert_eq!(code, 0);
     assert!(stdout.contains("Aliases:"));
     assert!(stdout.contains("openai -> openai/privacy-filter-v1"));
+    assert!(stdout.contains("mlx -> openai/privacy-filter-v1-mlx"));
     assert!(stdout.contains("support=supported"));
+    assert!(stdout.contains("support=experimental"));
     assert!(stdout.contains("mode=token-span"));
+    assert!(stdout.contains("mode=token-span-mlx"));
     assert!(stdout.contains("installed=yes"));
     assert!(stdout.contains("active=yes"));
+    assert!(stdout.contains("installed=no"));
 }
 
 #[cfg(unix)]

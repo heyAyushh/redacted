@@ -203,6 +203,7 @@ USAGE:
   redacted --input secrets.txt
   redacted --input logs/ --output cleaned/
   redacted provider enable openai
+  redacted provider enable mlx
   redacted document enable pdf-inspector
   redacted benchmark --input logs/ --iterations 5 --privacy-filter
 
@@ -307,16 +308,19 @@ USAGE:
   redacted provider disable
 
 OVERVIEW:
-  Provider aliases are human-friendly shortcuts such as `openai`.
+  Provider aliases are human-friendly shortcuts such as `openai` and `mlx`.
   Exact targets are persistent IDs such as `openai/privacy-filter-v1`.
   Aliases always resolve to a pinned exact target and the command prints
   the resolved target before it changes local state.
   Provider mode is optional and lower-trust than the hardened Rust-only core scan path.
-  `openai` is the supported token-span path.
+  `openai` is the supported OPF token-span path.
+  `mlx` is an experimental local MLX runtime for the converted OpenAI Privacy Filter.
 
 EXAMPLES:
   redacted provider enable openai
+  redacted provider enable mlx
   redacted provider install openai/privacy-filter-v1
+  redacted provider install openai/privacy-filter-v1-mlx
   redacted provider use openai
   redacted provider current
   redacted provider list
@@ -336,9 +340,11 @@ USAGE:
 EXAMPLES:
   redacted provider enable openai
   redacted provider enable openai/privacy-filter-v1
+  redacted provider enable mlx
+  redacted provider enable openai/privacy-filter-v1-mlx
 
 BEHAVIOR:
-  - Resolves aliases such as `openai` to pinned exact targets.
+  - Resolves aliases such as `openai` and `mlx` to pinned exact targets.
   - Installs the bundle if it is missing.
   - Verifies the installed bundle if no verification stamp is present.
   - Marks the resolved exact target as active.
@@ -352,7 +358,9 @@ USAGE:
 
 EXAMPLES:
   redacted provider install openai
-  redacted provider install openai/privacy-filter-v1"#
+  redacted provider install openai/privacy-filter-v1
+  redacted provider install mlx
+  redacted provider install openai/privacy-filter-v1-mlx"#
         }
         ProviderHelpTopic::Use => {
             r#"redacted provider use — switch the active provider to an installed, verified bundle.
@@ -363,6 +371,8 @@ USAGE:
 EXAMPLES:
   redacted provider use openai
   redacted provider use openai/privacy-filter-v1
+  redacted provider use mlx
+  redacted provider use openai/privacy-filter-v1-mlx
 
 NOTE:
   `use` does not download anything. Use `enable` for easy onboarding or
@@ -390,6 +400,8 @@ EXAMPLES:
   redacted provider verify
   redacted provider verify openai
   redacted provider verify openai/privacy-filter-v1
+  redacted provider verify mlx
+  redacted provider verify openai/privacy-filter-v1-mlx
   redacted provider verify --all
 
 DEFAULT:

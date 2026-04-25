@@ -18,8 +18,8 @@ This document describes the optional provider subsystem behind
 
 `redacted` supports two selector forms:
 
-- Alias: `openai`
-- Exact target: `openai/privacy-filter-v1`
+- Alias: `openai` or `mlx`
+- Exact target: `openai/privacy-filter-v1` or `openai/privacy-filter-v1-mlx`
 
 Aliases are onboarding shortcuts. They always resolve to a pinned exact target.
 Commands print the resolved target before they change local state.
@@ -27,10 +27,14 @@ Commands print the resolved target before they change local state.
 Current built-in mapping:
 
 - `openai -> openai/privacy-filter-v1`
+- `mlx -> openai/privacy-filter-v1-mlx`
 
 Support tier:
 
 - `openai/privacy-filter-v1` is the supported token-span path.
+- `openai/privacy-filter-v1-mlx` is experimental and runs the converted OpenAI
+  Privacy Filter model through local MLX packages on Apple Silicon. It requires
+  Python 3.10 or newer for the MLX package environment.
 
 Generative runtimes are intentionally not exposed as privacy-filter providers
 unless they run a real detector with verified span output.
@@ -51,6 +55,13 @@ Human-friendly setup:
 
 ```bash
 redacted provider enable openai
+redacted --privacy-filter --input logs/
+```
+
+Experimental MLX setup:
+
+```bash
+redacted provider enable mlx
 redacted --privacy-filter --input logs/
 ```
 
@@ -90,6 +101,25 @@ OpenAI bundle layout:
     ...
 ```
 
+MLX bundle layout:
+
+```text
+<data-root>/providers/openai/privacy-filter-v1-mlx/
+  bundle.state
+  verified.state
+  model/
+    config.json
+    model.safetensors
+    model.safetensors.index.json
+    tokenizer.json
+    tokenizer_config.json
+    viterbi_calibration.json
+  runner/
+    mlx_privacy_runner.py
+  venv/
+    ...
+```
+
 ## Integrity Verification
 
 The checked-in provider catalog pins:
@@ -106,7 +136,7 @@ The checked-in provider catalog pins:
 `redacted provider install ...`:
 
 1. resolves the selector to a pinned exact target
-2. installs the OpenAI Privacy Filter runtime bundle
+2. installs the selected OpenAI Privacy Filter runtime bundle
 3. verifies pinned package and model artifacts by size and SHA-256
 4. writes `verified.state`
 
@@ -183,6 +213,8 @@ Common failures and the next command to run:
   - `redacted provider use openai`
 - Bundle missing verification stamp:
   - `redacted provider verify openai`
+- Want the experimental MLX runtime:
+  - `redacted provider enable mlx`
 - Need to see what is installed:
   - `redacted provider list`
 - Need to clear the current selection:
