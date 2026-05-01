@@ -2,7 +2,9 @@ mod cli;
 mod config;
 mod detector;
 mod errors;
+mod except;
 mod io_safe;
+mod policy;
 mod redact;
 mod report;
 mod traverse;
@@ -11,6 +13,7 @@ use cli::{BinaryMode, OutputFormat};
 use config::Config;
 use detector::DetectorRegistry;
 use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
+use policy::{FindingAction, FindingDecision};
 use report::{FileResult, FileStatus, FindingReport, Summary};
 use std::path::Path;
 use std::process;
@@ -29,6 +32,10 @@ fn main() {
 fn run() -> errors::Result<i32> {
     let cli_args = cli::parse_args()?;
 
+    if let Some(ref except_args) = cli_args.except {
+        return except::run_except_command(except_args);
+    }
+
     if cli_args.show_help {
         cli::print_help();
         return Ok(EXIT_SUCCESS);
@@ -39,6 +46,12 @@ fn run() -> errors::Result<i32> {
     }
 
     let config = Config::from_cli(&cli_args)?;
+    let except_rules =
+        if let Some(path) = except::resolve_scan_except_path(config.except_file.as_deref())? {
+            except::load_rules(&path)?
+        } else {
+            Vec::new()
+        };
 
     // Build detector registry
     let registry = DetectorRegistry::build_default(
@@ -49,7 +62,7 @@ fn run() -> errors::Result<i32> {
 
     // Determine input source (priority: text > input > stdin)
     if let Some(ref text) = config.text {
-        return process_text(text, &config, &registry);
+        return process_text(text, &config, &registry, &except_rules);
     }
 
     if let Some(ref input_path) = config.input {
@@ -62,9 +75,9 @@ fn run() -> errors::Result<i32> {
         }
 
         if path.is_file() {
-            return process_single_file(path, &config, &registry);
+            return process_single_file(path, &config, &registry, &except_rules);
         } else if path.is_dir() {
-            return process_directory(path, &config, &registry);
+            return process_directory(path, &config, &registry, &except_rules);
         } else {
             return Err(RedactError::Usage(format!(
                 "Input '{}' is neither a file nor a directory.",
@@ -76,7 +89,7 @@ fn run() -> errors::Result<i32> {
     // stdin fallback
     if io_safe::stdin_is_piped() {
         let text = io_safe::read_stdin()?;
-        return process_text(&text, &config, &registry);
+        return process_text(&text, &config, &registry, &except_rules);
     }
 
     Err(RedactError::Usage(
@@ -89,19 +102,68 @@ fn run() -> errors::Result<i32> {
     ))
 }
 
-fn process_text(text: &str, config: &Config, registry: &DetectorRegistry) -> errors::Result<i32> {
-    let findings = registry.detect_all(text);
-    let finding_count = findings.len();
+fn decide_findings(
+    text: &str,
+    config: &Config,
+    registry: &DetectorRegistry,
+    except_rules: &[except::ExceptRule],
+) -> Vec<FindingDecision> {
+    policy::decide_findings(
+        text,
+        registry.detect_all(text),
+        &config.retain_detectors,
+        &config.retain_literals,
+        &config.except_detectors,
+        &config.except_literals,
+        except_rules,
+    )
+}
 
-    let reports: Vec<FindingReport> = findings
+fn redacted_findings(decisions: &[FindingDecision]) -> Vec<detector::Finding> {
+    decisions
         .iter()
-        .map(|f| report::finding_to_report(f, text))
+        .filter(|d| d.action == FindingAction::Redact)
+        .map(|d| d.finding.clone())
+        .collect()
+}
+
+fn reportable_findings(decisions: &[FindingDecision]) -> Vec<&FindingDecision> {
+    decisions
+        .iter()
+        .filter(|d| d.action != FindingAction::Ignore)
+        .collect()
+}
+
+fn action_name(action: FindingAction) -> &'static str {
+    match action {
+        FindingAction::Redact => "redacted",
+        FindingAction::Retain => "retained",
+        FindingAction::Ignore => "ignored",
+    }
+}
+
+fn process_text(
+    text: &str,
+    config: &Config,
+    registry: &DetectorRegistry,
+    except_rules: &[except::ExceptRule],
+) -> errors::Result<i32> {
+    let decisions = decide_findings(text, config, registry, except_rules);
+    let reportable = reportable_findings(&decisions);
+    let redactions = redacted_findings(&decisions);
+    let finding_count = reportable.len();
+
+    let reports: Vec<FindingReport> = reportable
+        .iter()
+        .map(|decision| {
+            report::finding_to_report(&decision.finding, text, action_name(decision.action))
+        })
         .collect();
 
     let redacted = if config.dry_run {
         text.to_string()
     } else {
-        redact::apply_redactions(text, &findings, config.replacement.as_deref())
+        redact::apply_redactions(text, &redactions, config.replacement.as_deref())
     };
 
     // Build result for reporting
@@ -168,6 +230,7 @@ fn process_single_file(
     path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     let text = match read_file_with_mode(path, config) {
         Ok(t) => t,
@@ -193,17 +256,21 @@ fn process_single_file(
         }
     };
 
-    let findings = registry.detect_all(&text);
-    let finding_count = findings.len();
-    let reports: Vec<FindingReport> = findings
+    let decisions = decide_findings(&text, config, registry, except_rules);
+    let reportable = reportable_findings(&decisions);
+    let redactions = redacted_findings(&decisions);
+    let finding_count = reportable.len();
+    let reports: Vec<FindingReport> = reportable
         .iter()
-        .map(|f| report::finding_to_report(f, &text))
+        .map(|decision| {
+            report::finding_to_report(&decision.finding, &text, action_name(decision.action))
+        })
         .collect();
 
     let redacted = if config.dry_run {
         text.clone()
     } else {
-        redact::apply_redactions(&text, &findings, config.replacement.as_deref())
+        redact::apply_redactions(&text, &redactions, config.replacement.as_deref())
     };
 
     let file_result = FileResult {
@@ -258,6 +325,7 @@ fn process_directory(
     dir_path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
     if config.output.is_none()
@@ -323,13 +391,21 @@ fn process_directory(
                     }
                 };
 
-                let findings = registry.detect_all(&text);
-                let finding_count = findings.len();
+                let decisions = decide_findings(&text, config, registry, except_rules);
+                let reportable = reportable_findings(&decisions);
+                let redactions = redacted_findings(&decisions);
+                let finding_count = reportable.len();
                 total_findings += finding_count;
 
-                let reports: Vec<FindingReport> = findings
+                let reports: Vec<FindingReport> = reportable
                     .iter()
-                    .map(|f| report::finding_to_report(f, &text))
+                    .map(|decision| {
+                        report::finding_to_report(
+                            &decision.finding,
+                            &text,
+                            action_name(decision.action),
+                        )
+                    })
                     .collect();
 
                 // Write redacted output if not dry-run
@@ -337,7 +413,7 @@ fn process_directory(
                     if let Some(ref out_dir) = config.output {
                         let redacted = redact::apply_redactions(
                             &text,
-                            &findings,
+                            &redactions,
                             config.replacement.as_deref(),
                         );
                         let out_path = Path::new(out_dir).join(&relative);
@@ -345,7 +421,7 @@ fn process_directory(
                     } else if config.in_place {
                         let redacted = redact::apply_redactions(
                             &text,
-                            &findings,
+                            &redactions,
                             config.replacement.as_deref(),
                         );
                         io_safe::atomic_write(&path, &redacted)?;

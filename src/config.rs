@@ -18,6 +18,11 @@ pub struct Config {
     pub patterns: Vec<(String, String)>,
     pub allow_patterns: Vec<String>,
     pub deny_patterns: Vec<String>,
+    pub retain_detectors: Vec<String>,
+    pub retain_literals: Vec<String>,
+    pub except_detectors: Vec<String>,
+    pub except_literals: Vec<String>,
+    pub except_file: Option<String>,
     pub dry_run: bool,
     pub fail_on_find: bool,
     pub summary: bool,
@@ -43,6 +48,11 @@ impl Config {
             patterns: cli.patterns.clone(),
             allow_patterns: cli.allow_patterns.clone(),
             deny_patterns: cli.deny_patterns.clone(),
+            retain_detectors: cli.retain_detectors.clone(),
+            retain_literals: cli.retain_literals.clone(),
+            except_detectors: cli.except_detectors.clone(),
+            except_literals: cli.except_literals.clone(),
+            except_file: cli.except_file.clone(),
             dry_run: cli.dry_run,
             fail_on_find: cli.fail_on_find,
             summary: cli.summary,
@@ -136,6 +146,43 @@ impl Config {
                 if !trimmed.is_empty() && !self.deny_patterns.contains(&trimmed) {
                     self.deny_patterns.push(trimmed);
                 }
+            }
+        }
+        if let Some(v) = values.get("retain_detectors") {
+            for name in v.split(',') {
+                let trimmed = name.trim().to_string();
+                if !trimmed.is_empty() && !self.retain_detectors.contains(&trimmed) {
+                    self.retain_detectors.push(trimmed);
+                }
+            }
+        }
+        if let Some(v) = values.get("retain_literals") {
+            for value in v.split(',') {
+                let trimmed = value.trim().to_string();
+                if !trimmed.is_empty() && !self.retain_literals.contains(&trimmed) {
+                    self.retain_literals.push(trimmed);
+                }
+            }
+        }
+        if let Some(v) = values.get("except_detectors") {
+            for name in v.split(',') {
+                let trimmed = name.trim().to_string();
+                if !trimmed.is_empty() && !self.except_detectors.contains(&trimmed) {
+                    self.except_detectors.push(trimmed);
+                }
+            }
+        }
+        if let Some(v) = values.get("except_literals") {
+            for value in v.split(',') {
+                let trimmed = value.trim().to_string();
+                if !trimmed.is_empty() && !self.except_literals.contains(&trimmed) {
+                    self.except_literals.push(trimmed);
+                }
+            }
+        }
+        if self.except_file.is_none() {
+            if let Some(v) = values.get("except_file") {
+                self.except_file = Some(v.clone());
             }
         }
 

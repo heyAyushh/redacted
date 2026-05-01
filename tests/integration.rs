@@ -450,6 +450,98 @@ fn deny_pattern_filters() {
     assert!(stdout.contains("user@example.com"));
 }
 
+#[test]
+fn retain_detector_keeps_visible_value_but_reports_it() {
+    let (stdout, stderr, code) = run(&[
+        "--text",
+        "email: user@example.com",
+        "--retain-detector",
+        "EMAIL",
+        "--report-json",
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("user@example.com"));
+    assert!(!stdout.contains("[REDACTED:EMAIL]"));
+    assert!(stderr.contains("\"detector\""));
+    assert!(stderr.contains("\"action\": \"retained\""));
+}
+
+#[test]
+fn except_file_retain_detector_keeps_visible_value() {
+    let dir = temp_dir("except_retain_detector");
+    let except_file = dir.join("rules.txt");
+    fs::write(&except_file, "retain\tdetector\tEMAIL\n").unwrap();
+
+    let (stdout, stderr, code) = run(&[
+        "--text",
+        "email: user@example.com",
+        "--except-file",
+        except_file.to_str().unwrap(),
+        "--report-json",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("user@example.com"));
+    assert!(stderr.contains("\"action\": \"retained\""));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn except_subcommand_add_list_remove_round_trip() {
+    let dir = temp_dir("except_subcommand");
+    let except_file = dir.join("rules.txt");
+
+    let (stdout, _, code) = run(&[
+        "except",
+        "--file",
+        except_file.to_str().unwrap(),
+        "add",
+        "--detector",
+        "EMAIL",
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Added retain detector EMAIL"));
+
+    let (stdout, _, code) = run(&["except", "--file", except_file.to_str().unwrap(), "list"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("retain detector EMAIL"));
+
+    let (stdout, _, code) = run(&[
+        "except",
+        "--file",
+        except_file.to_str().unwrap(),
+        "remove",
+        "--detector",
+        "EMAIL",
+    ]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Removed retain detector EMAIL"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn entropy_detector_redacts_unassigned_high_entropy_token() {
+    let (stdout, _, code) = run(&["--text", "token 9fJ4skQ2LmN8pR7vX5cT1wHbZ6dK3qY"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("[REDACTED:HIGH_ENTROPY_SECRET]"));
+}
+
+#[test]
+fn retain_custom_project_id_keeps_visible_value() {
+    let (stdout, stderr, code) = run(&[
+        "--text",
+        "project PROJ-1234 ready",
+        "--pattern",
+        "PROJECT_ID=PROJ-\\d+",
+        "--retain-detector",
+        "PROJECT_ID",
+        "--report-json",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("PROJ-1234"));
+    assert!(!stdout.contains("[REDACTED:PROJECT_ID]"));
+    assert!(stderr.contains("\"action\": \"retained\""));
+}
+
 // === Error Handling ===
 
 #[test]

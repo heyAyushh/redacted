@@ -191,6 +191,10 @@ fn new_file_mode_test() {
 
 When adding a new built-in detector:
 
+Use "detector" as the contributor-facing term for native scanning logic in this repo.
+Reserve "bridge" or "adapter" for rare integrations that translate to or from an
+external engine; those are not the default extension surface.
+
 1. **Implement the detector** in `src/detector/secrets.rs` (for secrets) or `src/detector/pii.rs` (for PII).
 2. **Add unit tests** in the same file's `mod tests` block covering:
    - At least one positive detection case.

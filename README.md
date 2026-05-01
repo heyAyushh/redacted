@@ -19,6 +19,15 @@ Zero external dependencies. Offline. Safe by default.
 
 ---
 
+## Extensibility Guidance
+
+- Prefer **detectors** for new first-class scanning logic. A detector is native to `redacted`: it scans text, emits findings, and participates in the built-in reporting/redaction pipeline.
+- Reserve **bridges/adapters** for rare external integrations where `redacted` needs to wrap another engine or protocol.
+- If you are borrowing ideas from tools like TruffleHog, implement them as native detectors in this repository rather than invoking the external tool at runtime.
+- If you are extending the product for normal use cases, contributors should build **detectors** rather than adapters.
+
+---
+
 ## Installation
 
 ```bash
@@ -82,6 +91,8 @@ redacted --text "user@a.com at /var/log/app.log from 10.0.0.1"
 ---
 
 ## Detectors
+
+When extending `redacted`, prefer building **detectors** that plug into the native scan pipeline. Reserve terms like **bridge** or **adapter** for rare cases where `redacted` wraps an external engine and translates its results back into native findings.
 
 ### Secrets (12)
 
