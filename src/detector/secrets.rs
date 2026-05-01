@@ -45,6 +45,14 @@ fn is_assignment_keyword_terminator(c: u8) -> bool {
     c.is_ascii_whitespace() || c == b'=' || c == b':'
 }
 
+fn is_keyword_start_boundary(text: &[u8], pos: usize) -> bool {
+    if pos == 0 || pos >= text.len() {
+        return true;
+    }
+    let prev = text[pos - 1];
+    !prev.is_ascii_alphanumeric()
+}
+
 fn shannon_entropy(sample: &[u8]) -> f64 {
     let mut counts = [0usize; 256];
     for &b in sample {
@@ -616,10 +624,19 @@ impl Detector for GenericSecretAssignDetector {
 
     fn detect(&self, text: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let keywords = ["secret", "token", "credential", "auth_key"];
+        let keywords = [
+            "client_secret",
+            "auth_token",
+            "session_key",
+            "secret",
+            "token",
+            "credential",
+            "auth_key",
+        ];
 
         for line in text.lines() {
             let lower = line.to_ascii_lowercase();
+            let mut line_findings = Vec::new();
             for kw in &keywords {
                 let mut search_from = 0;
                 while search_from < lower.len() {
@@ -627,6 +644,11 @@ impl Detector for GenericSecretAssignDetector {
                         break;
                     };
                     let kw_pos = search_from + rel_pos;
+
+                    if !is_keyword_start_boundary(lower.as_bytes(), kw_pos) {
+                        search_from = kw_pos + kw.len();
+                        continue;
+                    }
 
                     // Avoid matching "secret" inside words like "secretary"
                     let after = kw_pos + kw.len();
@@ -646,11 +668,17 @@ impl Detector for GenericSecretAssignDetector {
                     if let Some(finding) =
                         scan_key_value_pair(text, line, kw_pos, self.name(), self.category())
                     {
-                        findings.push(finding);
+                        if !line_findings.iter().any(|existing: &Finding| {
+                            existing.end == finding.end && existing.start <= finding.start
+                        }) {
+                            line_findings.push(finding);
+                        }
                     }
                     search_from = kw_pos + kw.len();
                 }
             }
+            line_findings.sort_by_key(|finding| finding.start);
+            findings.extend(line_findings);
         }
         findings
     }
@@ -696,6 +724,11 @@ impl Detector for HighEntropyKeywordDetector {
                         break;
                     };
                     let kw_pos = search_from + rel_pos;
+
+                    if !is_word_boundary(lower.as_bytes(), kw_pos) {
+                        search_from = kw_pos + kw.len();
+                        continue;
+                    }
 
                     let keyword_end = kw_pos + kw.len();
                     if keyword_end < lower.len()
@@ -994,6 +1027,27 @@ mod tests {
     }
 
     #[test]
+    fn generic_secret_assignment_prefers_full_compound_keyword_span() {
+        let d = GenericSecretAssignDetector;
+        let text = "client_secret=abcdef123456";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(&text[findings[0].start..findings[0].end], text);
+    }
+
+    #[test]
+    fn generic_secret_does_not_emit_partial_refresh_token_suffix_match() {
+        let d = GenericSecretAssignDetector;
+        let text = "refresh_token=abcdef123456";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            &text[findings[0].start..findings[0].end],
+            "token=abcdef123456"
+        );
+    }
+
+    #[test]
     fn generic_api_key_finds_later_occurrence_when_first_value_too_short() {
         let d = GenericApiKeyDetector;
         let findings = d.detect("api_key=x api_key=abcdefghi");
@@ -1033,6 +1087,22 @@ mod tests {
             &text[findings[1].start..findings[1].end],
             "secret=Yz8kLp3Vn6Qr1Tm9Sa4Bc7De"
         );
+    }
+
+    #[test]
+    fn high_entropy_detector_ignores_embedded_suffix_keyword() {
+        let d = HighEntropyKeywordDetector;
+        let text = "refresh_token=Qx7rL9mN2pV4sT8wY1bC6dF";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 0);
+    }
+
+    #[test]
+    fn high_entropy_detector_does_not_match_embedded_suffix_keyword() {
+        let d = HighEntropyKeywordDetector;
+        let text = "refresh_token=Qx7rL9mN2pV4sT8wY1bC6dF";
+        let findings = d.detect(text);
+        assert_eq!(findings.len(), 0);
     }
 
     #[test]
