@@ -133,6 +133,9 @@ default Rust-only detector path because it wraps external runtimes.
 Current support levels:
 
 - `openai/privacy-filter-v1` is the supported token-span path
+- `openai/privacy-filter-v1-mlx` is the experimental local MLX path for Apple
+  Silicon. It uses the same privacy-filter label contract, but a different
+  runner and model format.
 
 | Command | Description |
 |---------|-------------|
@@ -144,16 +147,20 @@ Current support levels:
 | `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
 | `redacted provider disable` | Clear the active provider selection |
 
-Aliases are human-friendly shortcuts such as `openai`. Exact targets are stable
-IDs such as `openai/privacy-filter-v1`. When an alias is used, the CLI prints
-the resolved exact target before changing local state.
+Aliases are human-friendly shortcuts such as `openai` and `mlx`. Exact targets
+are stable IDs such as `openai/privacy-filter-v1` and
+`openai/privacy-filter-v1-mlx`. When an alias is used, the CLI prints the
+resolved exact target before changing local state.
 
 Examples:
 
 ```bash
 redacted provider enable openai
+redacted provider enable mlx
 redacted provider install openai/privacy-filter-v1
+redacted provider install openai/privacy-filter-v1-mlx
 redacted provider use openai
+redacted provider use mlx
 redacted provider current
 redacted provider verify --all
 redacted provider disable
@@ -162,6 +169,9 @@ redacted provider disable
 Notes:
 
 - `openai` resolves to `openai/privacy-filter-v1`
+- `mlx` resolves to `openai/privacy-filter-v1-mlx`
+- MLX setup requires Python 3.10 or newer and downloads the pinned
+  `mlx-community/openai-privacy-filter-4bit` model conversion
 - `redacted --privacy-filter ...` never downloads anything during a scan
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output
 
@@ -337,8 +347,12 @@ redacted --text "user@example.com" --report-json 2>report.json
 # Run the extra provider-backed pass with the active provider
 redacted --privacy-filter --input logs/
 
-# Switch to the OpenAI Privacy Filter provider first
+# Switch to the supported OpenAI Privacy Filter provider first
 redacted provider enable openai
+redacted --privacy-filter --input logs/
+
+# Or use the experimental local MLX runtime on Apple Silicon
+redacted provider enable mlx
 redacted --privacy-filter --input logs/
 ```
 

@@ -163,12 +163,10 @@ The important trust boundary is:
 
 Current built-in aliases and targets:
 
-- Alias: `openai`
-- Exact target: `openai/privacy-filter-v1`
-- Adapter: supported local OPF runner around the OpenAI Privacy Filter model
-- Alias: `mlx`
-- Exact target: `openai/privacy-filter-v1-mlx`
-- Adapter: experimental Apple MLX runtime for the converted OpenAI Privacy Filter model
+| Alias | Exact target | Status | What it runs |
+|-------|--------------|--------|--------------|
+| `openai` | `openai/privacy-filter-v1` | Supported | Local OPF runner around the OpenAI Privacy Filter model |
+| `mlx` | `openai/privacy-filter-v1-mlx` | Experimental | Apple MLX runtime for the converted OpenAI Privacy Filter model |
 
 ### What It Does
 
@@ -200,6 +198,12 @@ The command prints the exact resolved target, for example:
 resolved target: openai/privacy-filter-v1
 ```
 
+For MLX, the resolved target is:
+
+```text
+resolved target: openai/privacy-filter-v1-mlx
+```
+
 ### Switching Later
 
 ```bash
@@ -218,6 +222,25 @@ redacted provider disable
 - `openai/privacy-filter-v1` is the supported token-span runtime.
 - `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned `mlx-community/openai-privacy-filter-4bit` conversion for local MLX inference.
 - Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
+
+### MLX Pinning
+
+The `mlx` alias resolves to `openai/privacy-filter-v1-mlx`, which downloads
+from `mlx-community/openai-privacy-filter-4bit` at this exact revision:
+
+```text
+8b784df48dd38a36b757f50c73d23e5bd38f3db0
+```
+
+The main model file is `model.safetensors`, pinned to:
+
+```text
+size:   790,435,150 bytes
+sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
+```
+
+All provider artifacts are checked by size and SHA-256 before the provider is
+marked verified.
 
 ---
 

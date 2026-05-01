@@ -309,7 +309,8 @@ USAGE:
 
 OVERVIEW:
   Provider aliases are human-friendly shortcuts such as `openai` and `mlx`.
-  Exact targets are persistent IDs such as `openai/privacy-filter-v1`.
+  Exact targets are persistent IDs such as `openai/privacy-filter-v1`
+  and `openai/privacy-filter-v1-mlx`.
   Aliases always resolve to a pinned exact target and the command prints
   the resolved target before it changes local state.
   Provider mode is optional and lower-trust than the hardened Rust-only core scan path.

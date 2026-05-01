@@ -36,6 +36,10 @@ Support tier:
   Privacy Filter model through local MLX packages on Apple Silicon. It requires
   Python 3.10 or newer for the MLX package environment.
 
+Provider selection is persistent. If you run `redacted provider enable mlx`,
+future `redacted --privacy-filter ...` scans use MLX until you switch back with
+`redacted provider use openai` or disable provider mode.
+
 Generative runtimes are intentionally not exposed as privacy-filter providers
 unless they run a real detector with verified span output.
 
@@ -62,6 +66,13 @@ Experimental MLX setup:
 
 ```bash
 redacted provider enable mlx
+redacted --privacy-filter --input logs/
+```
+
+Switch back to the supported OPF runtime:
+
+```bash
+redacted provider use openai
 redacted --privacy-filter --input logs/
 ```
 
@@ -133,6 +144,23 @@ The checked-in provider catalog pins:
 - model artifact byte sizes
 - canonical label mapping
 
+Current MLX model pin:
+
+```text
+target:   openai/privacy-filter-v1-mlx
+source:   mlx-community/openai-privacy-filter-4bit
+revision: 8b784df48dd38a36b757f50c73d23e5bd38f3db0
+package:  mlx-embeddings==0.1.0
+```
+
+Main MLX model artifact:
+
+```text
+file:   model.safetensors
+size:   790,435,150 bytes
+sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
+```
+
 `redacted provider install ...`:
 
 1. resolves the selector to a pinned exact target
@@ -188,6 +216,10 @@ Rules:
 - responses contain only labels and byte spans
 - responses do not contain raw span text
 - `redacted` owns masking, reports, retain rules, except rules, and file writes
+
+The MLX runner follows the same contract. MLX-specific model loading,
+tokenization, and label decoding stay inside the provider runner; the Rust core
+only sees labels and byte spans.
 
 ## Canonical Label Mapping
 
