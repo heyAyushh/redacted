@@ -1,5 +1,7 @@
 # redacted
 
+![redacted banner](assets/readme-banner.png)
+
 **Production-grade CLI for redacting secrets and PII from text and files.**
 
 Core binary: zero external dependencies, offline by default, safe by default.
