@@ -49,8 +49,13 @@ jobs:
       - name: Assert CI does not download provider models
         run: |
           set -euo pipefail
-          if ./target/release/redacted --privacy-filter >/tmp/redacted.out 2>/tmp/redacted.err; then
-            echo "privacy-filter unexpectedly succeeded without input" >&2
+          tmp_home="$(mktemp -d)"
+          export REDACTED_CONFIG_HOME="$tmp_home/config"
+          export REDACTED_DATA_HOME="$tmp_home/data"
+
+          if ./target/release/redacted --privacy-filter --text "hello" >/tmp/redacted.out 2>/tmp/redacted.err; then
+            echo "privacy-filter unexpectedly succeeded without a configured provider" >&2
             exit 1
           fi
-          grep -q "No input provided" /tmp/redacted.err
+          grep -q "No active privacy-filter provider is configured" /tmp/redacted.err
+          test ! -e "$REDACTED_DATA_HOME/providers"
