@@ -81,12 +81,6 @@ fn run() -> errors::Result<i32> {
     } else {
         None
     };
-    let mut document_session = if config.document_adapter {
-        Some(document::start_active_session()?)
-    } else {
-        None
-    };
-
     // Determine input source (priority: text > input > stdin)
     if let Some(ref text) = config.text {
         return process_text(
@@ -94,7 +88,7 @@ fn run() -> errors::Result<i32> {
             &config,
             &registry,
             provider_session.as_mut(),
-            document_session.as_mut(),
+            None,
             &except_rules,
         );
     }
@@ -107,6 +101,12 @@ fn run() -> errors::Result<i32> {
                 input_path
             )));
         }
+
+        let mut document_session = if config.document_adapter {
+            Some(document::start_active_session()?)
+        } else {
+            None
+        };
 
         if path.is_file() {
             return process_single_file(
@@ -142,7 +142,7 @@ fn run() -> errors::Result<i32> {
             &config,
             &registry,
             provider_session.as_mut(),
-            document_session.as_mut(),
+            None,
             &except_rules,
         );
     }

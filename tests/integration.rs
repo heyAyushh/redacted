@@ -611,6 +611,20 @@ fn document_adapter_requires_active_adapter() {
 
 #[cfg(unix)]
 #[test]
+fn document_adapter_text_input_does_not_require_active_adapter() {
+    let (_config_root, _data_root, envs) = provider_env("document_text_ignores_adapter");
+
+    let (stdout, stderr, code) = run_with_env(
+        &["--text", "email: user@example.com", "--document-adapter"],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+    assert!(!stderr.contains("No active document adapter is configured"));
+}
+
+#[cfg(unix)]
+#[test]
 fn document_adapter_rejects_single_file_in_place_before_extraction() {
     let (config_root, data_root, mut envs) = provider_env("document_single_in_place");
     add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
