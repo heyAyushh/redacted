@@ -5,7 +5,7 @@ use crate::{app_paths, app_paths::yes_or_no};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
@@ -266,10 +266,8 @@ pub fn start_active_session() -> Result<DocumentSession> {
     let bundle = bundle_root_for_entry(entry)?;
     ensure_ready_bundle(entry, &bundle)?;
     let manifest = load_bundle_manifest(&bundle_manifest_path(&bundle))?;
-    Ok(DocumentSession {
-        entry,
-        runner_path: bundle.join(manifest.runner_rel),
-    })
+    let runner_path = bundle_child_path(&bundle, &manifest.runner_rel, "runner_rel")?;
+    Ok(DocumentSession { entry, runner_path })
 }
 
 pub fn supports_path(path: &Path) -> bool {
@@ -450,7 +448,7 @@ fn verify_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path) -> Re
             entry.target
         )));
     }
-    let runner_path = bundle_root.join(&manifest.runner_rel);
+    let runner_path = bundle_child_path(bundle_root, &manifest.runner_rel, "runner_rel")?;
     if !runner_path.is_file() {
         return Err(RedactError::Config(format!(
             "Document adapter '{}' is missing runner '{}'.",
@@ -503,7 +501,7 @@ fn ensure_ready_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path)
             entry.target
         )));
     }
-    let runner_path = bundle_root.join(&manifest.runner_rel);
+    let runner_path = bundle_child_path(bundle_root, &manifest.runner_rel, "runner_rel")?;
     if !runner_path.exists() {
         return Err(RedactError::Config(format!(
             "Document adapter '{}' is missing runner '{}'.",
@@ -513,6 +511,28 @@ fn ensure_ready_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path)
     }
     ensure_pdftotext_available()?;
     Ok(())
+}
+
+fn bundle_child_path(bundle_root: &Path, rel: &str, field: &str) -> Result<PathBuf> {
+    let rel_path = Path::new(rel);
+    if rel.is_empty() || rel_path.is_absolute() {
+        return Err(RedactError::Config(format!(
+            "Document adapter manifest field '{}' must be a relative bundle path.",
+            field
+        )));
+    }
+    for component in rel_path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => {
+                return Err(RedactError::Config(format!(
+                    "Document adapter manifest field '{}' cannot escape the bundle.",
+                    field
+                )));
+            }
+        }
+    }
+    Ok(bundle_root.join(rel_path))
 }
 
 fn ensure_pdftotext_available() -> Result<()> {
@@ -738,5 +758,13 @@ mod tests {
         assert!(supports_path(Path::new("report.pdf")));
         assert!(supports_path(Path::new("report.PDF")));
         assert!(!supports_path(Path::new("report.txt")));
+    }
+
+    #[test]
+    fn bundle_child_path_rejects_paths_outside_bundle() {
+        let root = Path::new("/tmp/redacted-document-bundle");
+        assert!(bundle_child_path(root, "../runner", "runner_rel").is_err());
+        assert!(bundle_child_path(root, "/tmp/runner", "runner_rel").is_err());
+        assert!(bundle_child_path(root, "runner/provider.py", "runner_rel").is_ok());
     }
 }

@@ -1,4 +1,5 @@
 use crate::detector::{Confidence, Finding};
+use crate::json::json_escape;
 use std::io::{self, Write};
 
 /// A processed file result for reporting.
@@ -176,24 +177,6 @@ pub fn write_json_report<W: Write>(
     w.write_all(b"]\n}\n")?;
 
     Ok(())
-}
-
-fn json_escape(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                escaped.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => escaped.push(c),
-        }
-    }
-    escaped
 }
 
 /// Compute line number for a byte offset within text.

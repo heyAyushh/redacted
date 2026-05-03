@@ -2,7 +2,7 @@ use crate::cli::{print_provider_help, ProviderArgs, ProviderHelpTopic, ProviderS
 use crate::detector::{Confidence, Finding};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
 use crate::io_safe;
-use crate::{app_paths, app_paths::yes_or_no};
+use crate::{app_paths, app_paths::yes_or_no, json::json_escape};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -2017,24 +2017,6 @@ with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as ha
         )));
     }
     Ok(())
-}
-
-fn json_escape(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for character in input.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                escaped.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => escaped.push(c),
-        }
-    }
-    escaped
 }
 
 fn parse_provider_response(line: &str) -> Result<ProviderResponse> {

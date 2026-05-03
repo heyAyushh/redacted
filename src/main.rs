@@ -7,6 +7,7 @@ mod document;
 mod errors;
 mod except;
 mod io_safe;
+mod json;
 mod policy;
 mod provider;
 mod redact;
@@ -632,10 +633,10 @@ fn process_directory(
         );
     }
 
-    if summary.files_errored > 0 {
-        Ok(EXIT_ERROR)
-    } else if config.fail_on_find && total_findings > 0 {
+    if config.fail_on_find && total_findings > 0 {
         Ok(EXIT_FINDINGS)
+    } else if summary.files_errored > 0 {
+        Ok(EXIT_ERROR)
     } else {
         Ok(EXIT_SUCCESS)
     }

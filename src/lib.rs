@@ -7,6 +7,7 @@ pub mod document;
 pub mod errors;
 pub mod except;
 pub mod io_safe;
+pub mod json;
 pub mod policy;
 pub mod provider;
 pub mod redact;

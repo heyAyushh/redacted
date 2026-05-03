@@ -1,6 +1,6 @@
 use crate::cli::{print_benchmark_help, BenchmarkArgs, OutputFormat};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
-use crate::io_safe;
+use crate::{app_paths::yes_or_no, io_safe, json::json_escape};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -109,15 +109,16 @@ fn run_single_iteration(args: &BenchmarkArgs, iteration: usize) -> Result<Iterat
 }
 
 fn parse_summary_field(json: &str, field: &str) -> Result<u64> {
+    let summary = summary_object(json)?;
     let needle = format!("\"{}\":", field);
-    let position = json.find(&needle).ok_or_else(|| {
+    let position = summary.find(&needle).ok_or_else(|| {
         RedactError::Detection(format!(
             "Benchmark output is missing summary field '{}'.",
             field
         ))
     })?;
     let mut number = String::new();
-    for character in json[position + needle.len()..].chars() {
+    for character in summary[position + needle.len()..].chars() {
         if character.is_ascii_digit() {
             number.push(character);
         } else if number.is_empty() && character.is_ascii_whitespace() {
@@ -138,6 +139,56 @@ fn parse_summary_field(json: &str, field: &str) -> Result<u64> {
             field, number
         ))
     })
+}
+
+fn summary_object(json: &str) -> Result<&str> {
+    let summary_key = "\"summary\"";
+    let summary_position = json.find(summary_key).ok_or_else(|| {
+        RedactError::Detection("Benchmark output is missing summary object.".into())
+    })?;
+    let search_start = summary_position + summary_key.len();
+    let object_offset = json[search_start..].find('{').ok_or_else(|| {
+        RedactError::Detection("Benchmark output summary is not an object.".into())
+    })?;
+    let object_start = search_start + object_offset;
+    let object_end = matching_object_end(json, object_start)?;
+    Ok(&json[object_start..=object_end])
+}
+
+fn matching_object_end(json: &str, object_start: usize) -> Result<usize> {
+    let bytes = json.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes[object_start..].iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(object_start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(RedactError::Detection(
+        "Benchmark output summary object is incomplete.".into(),
+    ))
 }
 
 fn render_text_report(
@@ -256,32 +307,6 @@ fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
     boundary
 }
 
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if (character as u32) < 0x20 => {
-                escaped.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
-}
-
-fn yes_or_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +316,13 @@ mod tests {
         let json = r#"{"summary":{"files_processed":12,"files_skipped":1}}"#;
         assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
         assert_eq!(parse_summary_field(json, "files_skipped").unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_summary_field_ignores_matching_text_outside_summary() {
+        let json =
+            r#"{"files":[{"path":"\"files_processed\":999"}],"summary":{"files_processed":12}}"#;
+        assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
     }
 
     #[test]

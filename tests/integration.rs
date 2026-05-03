@@ -1075,6 +1075,29 @@ fn fail_on_find_exits_0_no_findings() {
 }
 
 #[test]
+fn fail_on_find_takes_precedence_over_directory_errors() {
+    let dir = temp_dir("fail_on_find_with_errors");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("secret.txt"), "email: user@example.com").unwrap();
+    fs::write(input_dir.join("binary.dat"), b"\x00\xff\x00").unwrap();
+
+    let (_stdout, stderr, code) = run(&[
+        "--input",
+        input_dir.to_str().unwrap(),
+        "--dry-run",
+        "--binary",
+        "fail",
+        "--fail-on-find",
+        "--report-json",
+    ]);
+    assert_eq!(code, 3, "stderr: {}", stderr);
+    assert!(stderr.contains("\"total_findings\": 1"));
+    assert!(stderr.contains("\"files_errored\": 1"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn dry_run_does_not_redact_text() {
     let (stdout, stderr, code) = run(&["--text", "email: user@example.com", "--dry-run"]);
     assert_eq!(code, 0);
