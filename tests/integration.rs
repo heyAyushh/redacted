@@ -303,6 +303,7 @@ mode = os.environ.get("FAKE_PROVIDER_MODE", "normal")
 if mode == "exit_with_stderr":
     sys.stderr.write("provider import failed: missing fake_package\n")
     sys.exit(7)
+desync_marker = os.environ.get("FAKE_PROVIDER_DESYNC_MARKER")
 
 for raw_line in sys.stdin:
     line = raw_line.strip()
@@ -312,12 +313,20 @@ for raw_line in sys.stdin:
         sys.stdout.write("{bad json}\n")
         sys.stdout.flush()
         continue
+    if mode == "desync_once" and desync_marker and not os.path.exists(desync_marker):
+        with open(desync_marker, "w", encoding="utf-8") as handle:
+            handle.write("used\n")
+        sys.stdout.write("debug output on stdout\n")
+        sys.stdout.flush()
+        continue
 
     request = json.loads(line)
     text = request["text"]
     spans = []
     if mode == "bad_span":
         spans.append({"label": "private_person", "start": 1, "end": 2})
+    elif mode == "zero_span":
+        spans.append({"label": "private_person", "start": 0, "end": 0})
     else:
         if text.startswith("Alice"):
             spans.append({"label": "private_person", "start": 0, "end": 5})
@@ -433,6 +442,32 @@ fn benchmark_runs_json_report() {
     assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains("\"runs\""));
     assert!(stdout.contains("\"summary\""));
+}
+
+#[cfg(unix)]
+#[test]
+fn benchmark_accepts_directory_reports_with_file_errors() {
+    let dir = temp_dir("benchmark_file_error");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("ok.txt"), "email user@example.com").unwrap();
+    let unreadable = input_dir.join("blocked.txt");
+    fs::write(&unreadable, "blocked").unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (stdout, stderr, code) = run(&[
+        "benchmark",
+        "--input",
+        input_dir.to_str().unwrap(),
+        "--iterations",
+        "1",
+    ]);
+
+    let _ = fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o600));
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("Benchmark report"));
+    assert!(stdout.contains("files_errored=1"));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -749,6 +784,60 @@ fn privacy_filter_rejects_non_boundary_provider_spans() {
     let (_stdout, stderr, code) = run_with_env(&["--text", "éAlice", "--privacy-filter"], &envs);
     assert_eq!(code, 1);
     assert!(stderr.contains("returned invalid span"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_rejects_zero_length_provider_spans() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_zero_span");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "zero_span".into()));
+
+    let (_stdout, stderr, code) = run_with_env(&["--text", "Alice", "--privacy-filter"], &envs);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("returned invalid span 0..0"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_directory_restarts_provider_after_desync() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_dir_desync_restart");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    let marker_path = data_root.join("desync-marker");
+    let starts_path = data_root.join("runner-starts.log");
+    envs.push(("FAKE_PROVIDER_MODE".into(), "desync_once".into()));
+    envs.push((
+        "FAKE_PROVIDER_DESYNC_MARKER".into(),
+        marker_path.to_string_lossy().into_owned(),
+    ));
+    envs.push((
+        "FAKE_PROVIDER_START_MARKER".into(),
+        starts_path.to_string_lossy().into_owned(),
+    ));
+
+    let input_dir = data_root.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), "Alice emailed user@example.com").unwrap();
+    fs::write(input_dir.join("b.txt"), "Alice was born on 1990-01-02").unwrap();
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--privacy-filter",
+            "--dry-run",
+            "--format",
+            "json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 1, "stderr: {}", stderr);
+    assert!(stdout.contains("\"path\": \"a.txt\""));
+    assert!(stdout.contains("\"path\": \"b.txt\""));
+    assert!(stdout.contains("\"files_errored\": 1"));
+    assert!(stdout.contains("\"files_processed\": 1"));
+    let starts = fs::read_to_string(&starts_path).unwrap();
+    assert_eq!(starts.lines().count(), 2);
 }
 
 #[test]
@@ -1117,7 +1206,8 @@ fn fail_on_find_takes_precedence_over_directory_errors() {
     let input_dir = dir.join("input");
     fs::create_dir_all(&input_dir).unwrap();
     fs::write(input_dir.join("secret.txt"), "email: user@example.com").unwrap();
-    fs::write(input_dir.join("binary.dat"), b"\x00\xff\x00").unwrap();
+    let binary_path = input_dir.join("binary.dat");
+    fs::write(&binary_path, b"\x00\xff\x00").unwrap();
 
     let (_stdout, stderr, code) = run(&[
         "--input",
@@ -1129,6 +1219,8 @@ fn fail_on_find_takes_precedence_over_directory_errors() {
         "--report-json",
     ]);
     assert_eq!(code, 3, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"binary.dat\""));
+    assert!(!stderr.contains(&binary_path.display().to_string()));
     assert!(stderr.contains("\"total_findings\": 1"));
     assert!(stderr.contains("\"files_errored\": 1"));
     let _ = fs::remove_dir_all(&dir);

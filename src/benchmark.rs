@@ -81,7 +81,23 @@ fn run_single_iteration(args: &BenchmarkArgs, iteration: usize) -> Result<Iterat
     })?;
     let elapsed_ms = started.elapsed().as_millis();
 
-    if !output.status.success() {
+    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+        RedactError::Detection(format!(
+            "Benchmark iteration {} returned invalid UTF-8 JSON output.",
+            iteration
+        ))
+    })?;
+
+    let metrics = IterationMetrics {
+        iteration,
+        elapsed_ms,
+        files_processed: parse_summary_field(&stdout, "files_processed")?,
+        files_skipped: parse_summary_field(&stdout, "files_skipped")?,
+        files_errored: parse_summary_field(&stdout, "files_errored")?,
+        total_findings: parse_summary_field(&stdout, "total_findings")?,
+    };
+
+    if !output.status.success() && metrics.files_processed == 0 && metrics.files_errored == 0 {
         let code = output.status.code().unwrap_or(-1);
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(RedactError::Detection(format!(
@@ -92,21 +108,7 @@ fn run_single_iteration(args: &BenchmarkArgs, iteration: usize) -> Result<Iterat
         )));
     }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|_| {
-        RedactError::Detection(format!(
-            "Benchmark iteration {} returned invalid UTF-8 JSON output.",
-            iteration
-        ))
-    })?;
-
-    Ok(IterationMetrics {
-        iteration,
-        elapsed_ms,
-        files_processed: parse_summary_field(&stdout, "files_processed")?,
-        files_skipped: parse_summary_field(&stdout, "files_skipped")?,
-        files_errored: parse_summary_field(&stdout, "files_errored")?,
-        total_findings: parse_summary_field(&stdout, "total_findings")?,
-    })
+    Ok(metrics)
 }
 
 fn parse_summary_field(json: &str, field: &str) -> Result<u64> {
@@ -143,17 +145,63 @@ fn parse_summary_field(json: &str, field: &str) -> Result<u64> {
 }
 
 fn summary_object(json: &str) -> Result<&str> {
-    let summary_key = "\"summary\"";
-    let summary_position = json.find(summary_key).ok_or_else(|| {
-        RedactError::Detection("Benchmark output is missing summary object.".into())
-    })?;
-    let search_start = summary_position + summary_key.len();
-    let object_offset = json[search_start..].find('{').ok_or_else(|| {
-        RedactError::Detection("Benchmark output summary is not an object.".into())
-    })?;
-    let object_start = search_start + object_offset;
+    let object_start = find_top_level_object_field(json, "summary")?;
     let object_end = matching_object_end(json, object_start)?;
     Ok(&json[object_start..=object_end])
+}
+
+fn find_top_level_object_field(json: &str, field: &str) -> Result<usize> {
+    let bytes = json.as_bytes();
+    let mut position = skip_json_whitespace(bytes, 0);
+    if bytes.get(position) != Some(&b'{') {
+        return Err(RedactError::Detection(
+            "Benchmark output is not a JSON object.".into(),
+        ));
+    }
+    position += 1;
+    loop {
+        position = skip_json_whitespace(bytes, position);
+        if bytes.get(position) == Some(&b'}') {
+            break;
+        }
+        if bytes.get(position) != Some(&b'"') {
+            return Err(RedactError::Detection(
+                "Benchmark output has invalid object key.".into(),
+            ));
+        }
+        let key_start = position + 1;
+        let key_end = string_literal_end(json, position)?;
+        let key = &json[key_start..key_end];
+        position = skip_json_whitespace(bytes, key_end + 1);
+        if bytes.get(position) != Some(&b':') {
+            return Err(RedactError::Detection(
+                "Benchmark output object key is missing ':'.".into(),
+            ));
+        }
+        position = skip_json_whitespace(bytes, position + 1);
+        if key == field {
+            if bytes.get(position) != Some(&b'{') {
+                return Err(RedactError::Detection(
+                    "Benchmark output summary is not an object.".into(),
+                ));
+            }
+            return Ok(position);
+        }
+        position = skip_json_value(bytes, position)?;
+        position = skip_json_whitespace(bytes, position);
+        match bytes.get(position) {
+            Some(b',') => position += 1,
+            Some(b'}') => break,
+            _ => {
+                return Err(RedactError::Detection(
+                    "Benchmark output object is malformed.".into(),
+                ));
+            }
+        }
+    }
+    Err(RedactError::Detection(
+        "Benchmark output is missing summary object.".into(),
+    ))
 }
 
 fn matching_object_end(json: &str, object_start: usize) -> Result<usize> {
@@ -190,6 +238,74 @@ fn matching_object_end(json: &str, object_start: usize) -> Result<usize> {
     Err(RedactError::Detection(
         "Benchmark output summary object is incomplete.".into(),
     ))
+}
+
+fn skip_json_value(bytes: &[u8], start: usize) -> Result<usize> {
+    let mut position = start;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while position < bytes.len() {
+        let byte = bytes[position];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            position += 1;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                position += 1;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                position += 1;
+            }
+            b'}' | b']' => {
+                if depth == 0 {
+                    return Ok(position);
+                }
+                depth -= 1;
+                position += 1;
+            }
+            b',' if depth == 0 => return Ok(position),
+            _ => position += 1,
+        }
+    }
+    Ok(position)
+}
+
+fn string_literal_end(json: &str, start_quote: usize) -> Result<usize> {
+    let bytes = json.as_bytes();
+    let mut position = start_quote + 1;
+    let mut escaped = false;
+    while position < bytes.len() {
+        let byte = bytes[position];
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            return Ok(position);
+        }
+        position += 1;
+    }
+    Err(RedactError::Detection(
+        "Benchmark output has unterminated string.".into(),
+    ))
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut position: usize) -> usize {
+    while matches!(bytes.get(position), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        position += 1;
+    }
+    position
 }
 
 fn render_text_report(
@@ -312,6 +428,12 @@ mod tests {
     fn parse_summary_field_ignores_matching_text_outside_summary() {
         let json =
             r#"{"files":[{"path":"\"files_processed\":999"}],"summary":{"files_processed":12}}"#;
+        assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
+    }
+
+    #[test]
+    fn summary_object_ignores_summary_text_inside_strings() {
+        let json = r#"{"files":[{"path":"\"summary\":{\"files_processed\":999}"}],"summary":{"files_processed":12}}"#;
         assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
     }
 

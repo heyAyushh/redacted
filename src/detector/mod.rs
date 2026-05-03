@@ -173,9 +173,11 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
                 let new_specificity = detector_specificity_rank(f.detector_name);
                 let prefer_new_metadata = f.confidence > last.confidence
                     || (f.confidence == last.confidence
-                        && ((same_secret_category && new_specificity > last_specificity)
-                            || (new_specificity == last_specificity
-                                && (f.end - f.start) > (last.end - last.start))));
+                        && if same_secret_category && new_specificity != last_specificity {
+                            new_specificity > last_specificity
+                        } else {
+                            (f.end - f.start) > (last.end - last.start)
+                        });
                 if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
@@ -340,6 +342,33 @@ mod tests {
         let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "AWS_KEY");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 20);
+    }
+
+    #[test]
+    fn merge_overlapping_cross_category_still_prefers_longer_span() {
+        let findings = vec![
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 0,
+                end: 8,
+                confidence: Confidence::Medium,
+                matched_len: 8,
+            },
+            Finding {
+                detector_name: "EMAIL",
+                category: "pii",
+                start: 2,
+                end: 20,
+                confidence: Confidence::Medium,
+                matched_len: 18,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "EMAIL");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 20);
     }

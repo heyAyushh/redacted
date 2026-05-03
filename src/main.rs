@@ -513,7 +513,7 @@ fn process_directory(
                             }
                             if is_binary && matches!(config.binary, BinaryMode::Fail) {
                                 results.push(FileResult {
-                                    path: path.display().to_string(),
+                                    path: relative.display().to_string(),
                                     findings_count: 0,
                                     findings: vec![],
                                     status: FileStatus::Error("Binary file".into()),
@@ -521,7 +521,7 @@ fn process_directory(
                                 continue;
                             }
                             results.push(FileResult {
-                                path: path.display().to_string(),
+                                path: relative.display().to_string(),
                                 findings_count: 0,
                                 findings: vec![],
                                 status: FileStatus::Error(msg),
@@ -540,11 +540,27 @@ fn process_directory(
                 ) {
                     Ok(decisions) => decisions,
                     Err(error) => {
+                        let mut message = error.to_string();
+                        if let Some(session) = provider_session.as_deref_mut() {
+                            match provider::restart_active_session(session) {
+                                Ok(()) => {
+                                    message.push_str(
+                                        " Provider session was restarted before continuing.",
+                                    );
+                                }
+                                Err(restart_error) => {
+                                    message.push_str(&format!(
+                                        " Provider session restart failed: {}",
+                                        restart_error
+                                    ));
+                                }
+                            }
+                        }
                         results.push(FileResult {
                             path: relative.display().to_string(),
                             findings_count: 0,
                             findings: vec![],
-                            status: FileStatus::Error(error.to_string()),
+                            status: FileStatus::Error(message),
                         });
                         continue;
                     }
