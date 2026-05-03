@@ -218,9 +218,12 @@ redacted provider disable
 ### Important Behavior
 
 - `--privacy-filter` never downloads anything during a scan.
+- `--privacy-filter` uses the active locally installed provider bundle; it does not call the OpenAI API during scans.
+- The first provider-backed scan can be slower because the local model and runner need to load.
 - Provider downloads happen only through `redacted provider install ...` or `redacted provider enable ...`.
 - If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
 - The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
+- Python runtime dependencies for provider bundles are installed from checked-in hash-locked requirements files.
 - `openai/privacy-filter-v1` is the supported token-span runtime.
 - `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned `mlx-community/openai-privacy-filter-4bit` conversion for local MLX inference.
 - Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
@@ -243,6 +246,8 @@ sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
 
 All provider artifacts are checked by size and SHA-256 before the provider is
 marked verified.
+Provider Python dependencies are installed with pip `--require-hashes` from
+checked-in lock files under `provider-locks/`.
 
 ---
 

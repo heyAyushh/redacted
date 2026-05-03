@@ -86,6 +86,8 @@ inside an optional privacy-filter provider.
   explicit setup commands.
 - Provider artifacts are pinned in the checked-in catalog and verified by byte
   size and SHA-256 before use.
+- Provider Python dependencies are installed with hash-locked requirements, so
+  pip package downloads must match checked-in SHA-256 values.
 - The active provider is persisted as an exact target, not a floating alias.
 - Provider responses are limited to labels and byte spans; the Rust core still
   owns final masking, reports, and file writes.

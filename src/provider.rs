@@ -26,7 +26,10 @@ const OPENAI_PRIVACY_TARGET: &str = "openai/privacy-filter-v1";
 const OPENAI_PRIVACY_MLX_TARGET: &str = "openai/privacy-filter-v1-mlx";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
 const MLX_RUNNER_SCRIPT_NAME: &str = "mlx_privacy_runner.py";
-const MLX_EMBEDDINGS_PACKAGE: &str = "mlx-embeddings==0.1.0";
+const OPENAI_REQUIREMENTS_LOCK: &str =
+    include_str!("../provider-locks/openai-privacy-filter-v1-requirements.txt");
+const MLX_REQUIREMENTS_LOCK: &str =
+    include_str!("../provider-locks/openai-privacy-filter-v1-mlx-requirements.txt");
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
 const REDACTED_PROVIDER_DEBUG: &str = "REDACTED_PROVIDER_DEBUG";
 const PROVIDER_STDERR_LIMIT_BYTES: usize = 2048;
@@ -1195,6 +1198,11 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
     download_and_verify_artifact(package, &package_path)?;
 
     create_virtualenv(&temp_bundle.join("venv"))?;
+    install_locked_requirements(
+        temp_bundle,
+        "openai-requirements.lock",
+        OPENAI_REQUIREMENTS_LOCK,
+    )?;
     install_package_from_archive(temp_bundle, &package_path)?;
 
     for artifact in entry.model_artifacts {
@@ -1240,7 +1248,7 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
 
 fn install_mlx_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Result<()> {
     create_mlx_virtualenv(&temp_bundle.join("venv"))?;
-    install_pypi_package(temp_bundle, MLX_EMBEDDINGS_PACKAGE)?;
+    install_locked_requirements(temp_bundle, "mlx-requirements.lock", MLX_REQUIREMENTS_LOCK)?;
 
     for artifact in entry.model_artifacts {
         let path = temp_bundle.join(artifact.bundle_rel);
@@ -2018,6 +2026,8 @@ fn install_package_from_archive(bundle_root: &Path, archive_path: &Path) -> Resu
         .arg("install")
         .arg("--disable-pip-version-check")
         .arg("--no-input")
+        .arg("--no-deps")
+        .arg("--no-build-isolation")
         .arg(archive_path)
         .output()
         .map_err(|error| {
@@ -2036,7 +2046,13 @@ fn install_package_from_archive(bundle_root: &Path, archive_path: &Path) -> Resu
     Ok(())
 }
 
-fn install_pypi_package(bundle_root: &Path, package: &str) -> Result<()> {
+fn install_locked_requirements(
+    bundle_root: &Path,
+    lock_name: &str,
+    requirements_lock: &str,
+) -> Result<()> {
+    let lock_path = bundle_root.join(lock_name);
+    io_safe::atomic_write(&lock_path, requirements_lock)?;
     let python = bundle_root.join(default_venv_python_rel());
     let output = Command::new(&python)
         .arg("-m")
@@ -2044,18 +2060,21 @@ fn install_pypi_package(bundle_root: &Path, package: &str) -> Result<()> {
         .arg("install")
         .arg("--disable-pip-version-check")
         .arg("--no-input")
-        .arg(package)
+        .arg("--require-hashes")
+        .arg("-r")
+        .arg(&lock_path)
         .output()
         .map_err(|error| {
             RedactError::Config(format!(
-                "Failed to start pip install for '{}': {}",
-                package, error
+                "Failed to start locked pip install for '{}': {}",
+                lock_path.display(),
+                error
             ))
         })?;
     if !output.status.success() {
         return Err(RedactError::Config(format!(
-            "Provider package installation failed for '{}': {}",
-            package,
+            "Provider locked dependency installation failed for '{}': {}",
+            lock_path.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }

@@ -142,6 +142,7 @@ The checked-in provider catalog pins:
 - model artifact URLs
 - model artifact SHA-256 values
 - model artifact byte sizes
+- Python dependency versions and SHA-256 hashes in `provider-locks/`
 - canonical label mapping
 
 Each installed `bundle.state` also records the relative runner paths and hashes:
@@ -157,7 +158,7 @@ Current MLX model pin:
 target:   openai/privacy-filter-v1-mlx
 source:   mlx-community/openai-privacy-filter-4bit
 revision: 8b784df48dd38a36b757f50c73d23e5bd38f3db0
-package:  mlx-embeddings==0.1.0
+deps:     provider-locks/openai-privacy-filter-v1-mlx-requirements.txt
 ```
 
 Main MLX model artifact:
@@ -172,8 +173,9 @@ sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
 
 1. resolves the selector to a pinned exact target
 2. installs the selected OpenAI Privacy Filter runtime bundle
-3. verifies pinned package and model artifacts by size and SHA-256
-4. writes `verified.state`
+3. installs Python dependencies with pip `--require-hashes`
+4. verifies pinned package and model artifacts by size and SHA-256
+5. writes `verified.state`
 
 `redacted provider verify ...` re-hashes the installed artifacts again and
 refreshes `verified.state`.

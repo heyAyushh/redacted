@@ -42,6 +42,8 @@ guarantee above.
 - `redacted --privacy-filter ...` never downloads anything during a scan.
 - Provider bundles are installed under a dedicated app-data directory, verified
   when installed, and selected explicitly before they can be used.
+- Provider Python dependencies are installed from checked-in hash-locked
+  requirements files, so pip package downloads must match pinned SHA-256 values.
 
 ### Explicit Document Adapter Runtime
 
