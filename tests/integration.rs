@@ -807,7 +807,7 @@ fn privacy_filter_directory_provider_error_marks_files_and_continues() {
         ],
         &envs,
     );
-    assert_eq!(code, 1);
+    assert_eq!(code, 0);
     assert!(stderr.contains("\"path\": \"a.txt\""));
     assert!(stderr.contains("\"path\": \"b.txt\""));
     assert!(stderr.contains("\"files_errored\": 2"));
@@ -871,7 +871,7 @@ fn privacy_filter_directory_restarts_provider_after_desync() {
         ],
         &envs,
     );
-    assert_eq!(code, 1, "stderr: {}", stderr);
+    assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains("\"path\": \"a.txt\""));
     assert!(stdout.contains("\"path\": \"b.txt\""));
     assert!(stdout.contains("\"files_errored\": 1"));
@@ -1262,6 +1262,28 @@ fn fail_on_find_takes_precedence_over_directory_errors() {
     assert!(stderr.contains("\"path\": \"binary.dat\""));
     assert!(!stderr.contains(&binary_path.display().to_string()));
     assert!(stderr.contains("\"total_findings\": 1"));
+    assert!(stderr.contains("\"files_errored\": 1"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn directory_binary_fail_keeps_success_exit_without_fail_on_find() {
+    let dir = temp_dir("binary_fail_success_exit");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    let binary_path = input_dir.join("binary.dat");
+    fs::write(&binary_path, b"\x00\xff\x00").unwrap();
+
+    let (_stdout, stderr, code) = run(&[
+        "--input",
+        input_dir.to_str().unwrap(),
+        "--dry-run",
+        "--binary",
+        "fail",
+        "--report-json",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"binary.dat\""));
     assert!(stderr.contains("\"files_errored\": 1"));
     let _ = fs::remove_dir_all(&dir);
 }

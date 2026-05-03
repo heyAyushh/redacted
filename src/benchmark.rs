@@ -133,15 +133,64 @@ fn benchmark_iteration_error(iteration: usize, output: &std::process::Output) ->
 
 fn parse_summary_field(json: &str, field: &str) -> Result<u64> {
     let summary = summary_object(json)?;
-    let needle = format!("\"{}\":", field);
-    let position = summary.find(&needle).ok_or_else(|| {
+    let position = find_direct_object_field_value(summary, field)?.ok_or_else(|| {
         RedactError::Detection(format!(
             "Benchmark output is missing summary field '{}'.",
             field
         ))
     })?;
+    parse_json_u64_field(summary, position, field)
+}
+
+fn find_direct_object_field_value(json: &str, field: &str) -> Result<Option<usize>> {
+    let bytes = json.as_bytes();
+    let mut position = skip_json_whitespace(bytes, 0);
+    if bytes.get(position) != Some(&b'{') {
+        return Err(RedactError::Detection(
+            "Benchmark summary is not a JSON object.".into(),
+        ));
+    }
+    position += 1;
+    loop {
+        position = skip_json_whitespace(bytes, position);
+        if bytes.get(position) == Some(&b'}') {
+            return Ok(None);
+        }
+        if bytes.get(position) != Some(&b'"') {
+            return Err(RedactError::Detection(
+                "Benchmark summary has invalid object key.".into(),
+            ));
+        }
+        let key_start = position + 1;
+        let key_end = string_literal_end(json, position)?;
+        let key = &json[key_start..key_end];
+        position = skip_json_whitespace(bytes, key_end + 1);
+        if bytes.get(position) != Some(&b':') {
+            return Err(RedactError::Detection(
+                "Benchmark summary object key is missing ':'.".into(),
+            ));
+        }
+        position = skip_json_whitespace(bytes, position + 1);
+        if key == field {
+            return Ok(Some(position));
+        }
+        position = skip_json_value(bytes, position)?;
+        position = skip_json_whitespace(bytes, position);
+        match bytes.get(position) {
+            Some(b',') => position += 1,
+            Some(b'}') => return Ok(None),
+            _ => {
+                return Err(RedactError::Detection(
+                    "Benchmark summary object is malformed.".into(),
+                ));
+            }
+        }
+    }
+}
+
+fn parse_json_u64_field(json: &str, value_start: usize, field: &str) -> Result<u64> {
     let mut number = String::new();
-    for character in summary[position + needle.len()..].chars() {
+    for character in json[value_start..].chars() {
         if character.is_ascii_digit() {
             number.push(character);
         } else if number.is_empty() && character.is_ascii_whitespace() {
@@ -454,6 +503,13 @@ mod tests {
     #[test]
     fn summary_object_ignores_summary_text_inside_strings() {
         let json = r#"{"files":[{"path":"\"summary\":{\"files_processed\":999}"}],"summary":{"files_processed":12}}"#;
+        assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
+    }
+
+    #[test]
+    fn parse_summary_field_ignores_nested_summary_values() {
+        let json =
+            r#"{"summary":{"findings_by_type":{"files_processed":999},"files_processed":12}}"#;
         assert_eq!(parse_summary_field(json, "files_processed").unwrap(), 12);
     }
 

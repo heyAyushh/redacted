@@ -1103,9 +1103,7 @@ fn install_target(entry: &'static ProviderCatalogEntry) -> Result<InstallOutcome
             error
         ))
     })?;
-    if adapter_uses_virtualenv(entry.adapter) {
-        repair_bundle_runtime_paths(&bundle_root)?;
-    }
+    verify_bundle(entry, &bundle_root)?;
 
     Ok(InstallOutcome {
         installed_now: true,

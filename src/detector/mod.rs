@@ -168,9 +168,10 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
         if let Some(last) = merged.last_mut() {
             if f.start < last.end {
                 // Overlapping: expand the span to cover both findings (union),
-                // and keep the most specific detector metadata for equal-confidence
-                // overlaps. This ensures no fragment of a matched secret is left
-                // exposed while avoiding detector-name drift for contained matches.
+                // and keep the strongest detector metadata for equal-confidence
+                // overlaps. Redaction uses the union span, but metadata tie-breaks
+                // use the original selected match length to avoid giving chained
+                // unions an unfair size advantage.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
                 let same_secret_category = last.category == "secret" && f.category == "secret";
@@ -181,16 +182,16 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
                         && if same_secret_category && new_specificity != last_specificity {
                             new_specificity > last_specificity
                         } else {
-                            (f.end - f.start) > (last.end - last.start)
+                            f.matched_len > last.matched_len
                         });
                 if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
                     last.confidence = f.confidence;
+                    last.matched_len = f.matched_len;
                 }
                 last.start = union_start;
                 last.end = union_end;
-                last.matched_len = union_end - union_start;
                 continue;
             }
         }
@@ -423,6 +424,42 @@ mod tests {
         assert_eq!(merged[0].detector_name, "SECOND");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 24);
+    }
+
+    #[test]
+    fn merge_overlapping_chained_metadata_uses_original_match_lengths() {
+        let findings = vec![
+            Finding {
+                detector_name: "FIRST",
+                category: "pii",
+                start: 0,
+                end: 10,
+                confidence: Confidence::Medium,
+                matched_len: 10,
+            },
+            Finding {
+                detector_name: "SECOND",
+                category: "pii",
+                start: 8,
+                end: 20,
+                confidence: Confidence::Medium,
+                matched_len: 12,
+            },
+            Finding {
+                detector_name: "THIRD",
+                category: "pii",
+                start: 19,
+                end: 35,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "THIRD");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 35);
     }
 
     #[test]

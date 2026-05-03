@@ -19,7 +19,7 @@ use cli::{BinaryMode, OutputFormat};
 use config::Config;
 use detector::DetectorRegistry;
 use document::DocumentSession;
-use errors::{RedactError, EXIT_ERROR, EXIT_FINDINGS, EXIT_SUCCESS};
+use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
 use policy::{FindingAction, FindingDecision};
 use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
@@ -655,8 +655,6 @@ fn process_directory(
 
     if config.fail_on_find && total_findings > 0 {
         Ok(EXIT_FINDINGS)
-    } else if summary.files_errored > 0 {
-        Ok(EXIT_ERROR)
     } else {
         Ok(EXIT_SUCCESS)
     }
