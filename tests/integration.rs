@@ -1227,6 +1227,29 @@ fn fail_on_find_takes_precedence_over_directory_errors() {
 }
 
 #[test]
+fn directory_binary_skip_reports_relative_path() {
+    let dir = temp_dir("binary_skip_relative");
+    let input_dir = dir.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    let binary_path = input_dir.join("binary.dat");
+    fs::write(&binary_path, b"\x00\xff\x00").unwrap();
+
+    let (_stdout, stderr, code) = run(&[
+        "--input",
+        input_dir.to_str().unwrap(),
+        "--dry-run",
+        "--binary",
+        "skip",
+        "--report-json",
+    ]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"binary.dat\""));
+    assert!(!stderr.contains(&binary_path.display().to_string()));
+    assert!(stderr.contains("\"files_skipped\": 1"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn dry_run_does_not_redact_text() {
     let (stdout, stderr, code) = run(&["--text", "email: user@example.com", "--dry-run"]);
     assert_eq!(code, 0);

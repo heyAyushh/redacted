@@ -504,7 +504,7 @@ fn process_directory(
                             let is_binary = msg.contains("binary");
                             if is_binary && matches!(config.binary, BinaryMode::Skip) {
                                 results.push(FileResult {
-                                    path: path.display().to_string(),
+                                    path: relative.display().to_string(),
                                     findings_count: 0,
                                     findings: vec![],
                                     status: FileStatus::Skipped("Binary file".into()),
