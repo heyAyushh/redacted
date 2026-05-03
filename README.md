@@ -1,11 +1,78 @@
 # redacted
 
+[![CI](https://github.com/heyAyushh/redacted/actions/workflows/ci.yml/badge.svg)](https://github.com/heyAyushh/redacted/actions/workflows/ci.yml)
+
 ![redacted banner](assets/readme-banner.png)
 
 **Production-grade CLI for redacting secrets and PII from text and files.**
 
-Core binary: zero external dependencies, offline by default, safe by default.
-Optional privacy-filter providers: explicit local model bundles you install and enable yourself.
+Fast local redaction for logs, prompts, configs, and files. The default scan
+path is a single Rust binary with no crates.io dependencies, no network calls,
+and no model downloads.
+
+---
+
+## Install
+
+```bash
+cargo install --git https://github.com/heyAyushh/redacted --locked
+redacted --version
+```
+
+That installs the Rust CLI only. Optional provider models are never downloaded
+by install, build, tests, or normal scans.
+
+---
+
+## Try It
+
+```bash
+redacted --text "email jane@example.com password=correct-horse-battery-staple"
+# → email [REDACTED:EMAIL] [REDACTED:PASSWORD]
+```
+
+```bash
+echo "AWS key: AKIAIOSFODNN7EXAMPLE" | redacted
+# → AWS key: [REDACTED:AWS_KEY]
+```
+
+```bash
+redacted --input secrets.log --output clean.log
+redacted --input logs/ --output cleaned/ --summary
+```
+
+Use it in CI:
+
+```bash
+redacted --input . --fail-on-find --dry-run
+```
+
+---
+
+## Optional Local Privacy Filter
+
+`redacted` can add a second local detection pass using an installed provider
+bundle. This is off by default and separate from the hardened Rust-only scan
+path.
+
+```bash
+# One-time setup: downloads, hash-verifies, and activates the pinned local model
+redacted provider enable openai
+
+# Scan with the extra local provider pass
+redacted --privacy-filter --text "Jane Doe emailed jane@example.com from 411 111th St."
+```
+
+Provider scans use the local installed bundle. They do not call the OpenAI API.
+The first run can be slower because the local model has to load.
+
+Apple Silicon users can try the experimental MLX runtime for the same OpenAI
+Privacy Filter model:
+
+```bash
+redacted provider enable mlx
+redacted --privacy-filter --input logs/
+```
 
 ---
 
@@ -20,36 +87,6 @@ Optional privacy-filter providers: explicit local model bundles you install and 
 - **Structured output** — `--format json` and `--report-json` produce machine-readable reports with masked samples (secrets are never leaked in reports).
 - **Extensible** — add custom patterns via `--pattern NAME=REGEX` or a TOML config file.
 - **Optional privacy-filter pass** — add a second local detection pass from an installed provider bundle with `--privacy-filter`.
-
----
-
-## Extensibility Guidance
-
-- Prefer **detectors** for new first-class scanning logic. A detector is native to `redacted`: it scans text, emits findings, and participates in the built-in reporting/redaction pipeline.
-- Reserve **bridges/adapters** for rare external integrations where `redacted` needs to wrap another engine or protocol.
-- If you are borrowing ideas from tools like TruffleHog, implement them as native detectors in this repository rather than invoking the external tool at runtime.
-- If you are extending the product for normal use cases, contributors should build **detectors** rather than adapters.
-
----
-
-## Installation
-
-```bash
-# Clone and build
-git clone <repo-url>
-cd redacted
-cargo build --release
-
-# The binary is at:
-./target/release/redacted
-```
-
-Or build in debug mode for development:
-
-```bash
-cargo build
-cargo run -- --help
-```
 
 ---
 
@@ -69,21 +106,6 @@ redacted --input secrets.log --output clean.log
 
 # Redact a directory tree
 redacted --input logs/ --output cleaned/ --summary
-
-# Enable the pinned OpenAI Privacy Filter bundle
-redacted provider enable openai
-
-# Run the extra provider-backed pass
-redacted --input logs/ --output cleaned/ --summary --privacy-filter
-
-# Enable the PDF document adapter once
-redacted document enable pdf-inspector
-
-# Scan a PDF through the document adapter path
-redacted --input report.pdf --document-adapter
-
-# Run a repeatable benchmark
-redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
 
 # Dry-run in CI (exit code 3 if secrets found)
 redacted --input . --fail-on-find --dry-run
@@ -105,6 +127,27 @@ redacted --text "addr: 2001:0db8:85a3::8a2e:0370:7334"
 # Multiple types in one pass
 redacted --text "user@a.com at /var/log/app.log from 10.0.0.1"
 # → [REDACTED:EMAIL] at [REDACTED:PATH] from [REDACTED:IP]
+```
+
+---
+
+## Optional Extras
+
+```bash
+# Enable the pinned OpenAI Privacy Filter bundle once
+redacted provider enable openai
+
+# Run the extra provider-backed pass
+redacted --input logs/ --output cleaned/ --summary --privacy-filter
+
+# Enable the PDF document adapter once
+redacted document enable pdf-inspector
+
+# Scan a PDF through the document adapter path
+redacted --input report.pdf --document-adapter
+
+# Run a repeatable benchmark
+redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
 ```
 
 ---
