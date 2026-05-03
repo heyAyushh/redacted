@@ -1,3 +1,4 @@
+pub mod app_paths;
 pub mod benchmark;
 pub mod cli;
 pub mod config;

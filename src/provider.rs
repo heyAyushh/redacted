@@ -2,12 +2,12 @@ use crate::cli::{print_provider_help, ProviderArgs, ProviderHelpTopic, ProviderS
 use crate::detector::{Confidence, Finding};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
 use crate::io_safe;
+use crate::{app_paths, app_paths::yes_or_no};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const PROVIDER_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -24,8 +24,6 @@ const OPENAI_PRIVACY_MLX_TARGET: &str = "openai/privacy-filter-v1-mlx";
 const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
 const MLX_RUNNER_SCRIPT_NAME: &str = "mlx_privacy_runner.py";
 const MLX_EMBEDDINGS_PACKAGE: &str = "mlx-embeddings==0.1.0";
-const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
-const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1056,7 +1054,7 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
         &VerifiedState {
             schema_version: PROVIDER_SCHEMA_VERSION,
             target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
+            verified_unix_seconds: app_paths::unix_timestamp_now()?,
         },
     )?;
     Ok(())
@@ -1136,7 +1134,7 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
         &VerifiedState {
             schema_version: PROVIDER_SCHEMA_VERSION,
             target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
+            verified_unix_seconds: app_paths::unix_timestamp_now()?,
         },
     )?;
     Ok(())
@@ -1181,7 +1179,7 @@ fn install_mlx_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Resul
         &VerifiedState {
             schema_version: PROVIDER_SCHEMA_VERSION,
             target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
+            verified_unix_seconds: app_paths::unix_timestamp_now()?,
         },
     )?;
     Ok(())
@@ -1631,7 +1629,7 @@ fn has_verified_state(bundle_root: &Path) -> Result<bool> {
 }
 
 fn activate_target(entry: &'static ProviderCatalogEntry) -> Result<()> {
-    let config_root = config_root()?;
+    let config_root = app_paths::config_root()?;
     fs::create_dir_all(&config_root).map_err(|error| {
         RedactError::Config(format!(
             "Cannot create provider config directory '{}': {}",
@@ -1669,7 +1667,7 @@ fn load_active_provider_state() -> Result<Option<ActiveProviderState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let values = parse_key_value_file(&path)?;
+    let values = app_paths::parse_key_value_file(&path, "provider")?;
     let target = values.get("target").cloned().ok_or_else(|| {
         RedactError::Config(format!(
             "Provider state file '{}' is missing target.",
@@ -1703,7 +1701,7 @@ fn save_bundle_manifest(bundle_root: &Path, manifest: &BundleManifest) -> Result
 }
 
 fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
-    let values = parse_key_value_file(path)?;
+    let values = app_paths::parse_key_value_file(path, "provider")?;
     let adapter = values
         .get("adapter")
         .cloned()
@@ -1715,15 +1713,20 @@ fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
             ))
         })?;
     Ok(BundleManifest {
-        schema_version: parse_required_u32(&values, "schema_version", path)?,
-        target: parse_required_value(&values, "target", path)?,
-        provider: parse_required_value(&values, "provider", path)?,
-        model: parse_required_value(&values, "model", path)?,
+        schema_version: app_paths::parse_required_u32(&values, "schema_version", path, "provider")?,
+        target: app_paths::parse_required_value(&values, "target", path, "provider")?,
+        provider: app_paths::parse_required_value(&values, "provider", path, "provider")?,
+        model: app_paths::parse_required_value(&values, "model", path, "provider")?,
         adapter,
-        runner_rel: parse_required_value(&values, "runner_rel", path)?,
+        runner_rel: app_paths::parse_required_value(&values, "runner_rel", path, "provider")?,
         entry_rel: values.get("entry_rel").cloned(),
-        checkpoint_rel: parse_required_value(&values, "checkpoint_rel", path)?,
-        runner_sha256: parse_required_value(&values, "runner_sha256", path)?,
+        checkpoint_rel: app_paths::parse_required_value(
+            &values,
+            "checkpoint_rel",
+            path,
+            "provider",
+        )?,
+        runner_sha256: app_paths::parse_required_value(&values, "runner_sha256", path, "provider")?,
         runner_executable_sha256: values.get("runner_executable_sha256").cloned(),
     })
 }
@@ -1743,72 +1746,16 @@ fn save_verified_state(bundle_root: &Path, state: &VerifiedState) -> Result<()> 
 }
 
 fn load_verified_state(path: &Path) -> Result<VerifiedState> {
-    let values = parse_key_value_file(path)?;
+    let values = app_paths::parse_key_value_file(path, "provider")?;
     Ok(VerifiedState {
-        schema_version: parse_required_u32(&values, "schema_version", path)?,
-        target: parse_required_value(&values, "target", path)?,
-        verified_unix_seconds: parse_required_u64(&values, "verified_unix_seconds", path)?,
-    })
-}
-
-fn parse_key_value_file(path: &Path) -> Result<HashMap<String, String>> {
-    let content = fs::read_to_string(path).map_err(|error| {
-        RedactError::Config(format!("Cannot read '{}': {}", path.display(), error))
-    })?;
-    let mut values = HashMap::new();
-    for (line_index, raw_line) in content.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, value) = line.split_once('=').ok_or_else(|| {
-            RedactError::Config(format!(
-                "Invalid provider metadata line {} in '{}': {}",
-                line_index + 1,
-                path.display(),
-                raw_line
-            ))
-        })?;
-        values.insert(key.trim().to_string(), value.trim().to_string());
-    }
-    Ok(values)
-}
-
-fn parse_required_value(
-    values: &HashMap<String, String>,
-    key: &str,
-    path: &Path,
-) -> Result<String> {
-    values.get(key).cloned().ok_or_else(|| {
-        RedactError::Config(format!(
-            "Provider metadata '{}' is missing key '{}'.",
-            path.display(),
-            key
-        ))
-    })
-}
-
-fn parse_required_u32(values: &HashMap<String, String>, key: &str, path: &Path) -> Result<u32> {
-    let value = parse_required_value(values, key, path)?;
-    value.parse::<u32>().map_err(|_| {
-        RedactError::Config(format!(
-            "Provider metadata '{}' has invalid {} value '{}'.",
-            path.display(),
-            key,
-            value
-        ))
-    })
-}
-
-fn parse_required_u64(values: &HashMap<String, String>, key: &str, path: &Path) -> Result<u64> {
-    let value = parse_required_value(values, key, path)?;
-    value.parse::<u64>().map_err(|_| {
-        RedactError::Config(format!(
-            "Provider metadata '{}' has invalid {} value '{}'.",
-            path.display(),
-            key,
-            value
-        ))
+        schema_version: app_paths::parse_required_u32(&values, "schema_version", path, "provider")?,
+        target: app_paths::parse_required_value(&values, "target", path, "provider")?,
+        verified_unix_seconds: app_paths::parse_required_u64(
+            &values,
+            "verified_unix_seconds",
+            path,
+            "provider",
+        )?,
     })
 }
 
@@ -1821,7 +1768,7 @@ fn verified_state_path(bundle_root: &Path) -> PathBuf {
 }
 
 fn active_provider_state_path() -> Result<PathBuf> {
-    Ok(config_root()?.join(ACTIVE_PROVIDER_STATE_FILE))
+    Ok(app_paths::config_root()?.join(ACTIVE_PROVIDER_STATE_FILE))
 }
 
 fn bundle_root_for_entry(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
@@ -1829,7 +1776,7 @@ fn bundle_root_for_entry(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
 }
 
 fn install_temp_bundle_path(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
-    let now = unix_timestamp_now()?;
+    let now = app_paths::unix_timestamp_now()?;
     Ok(providers_root()?.join(format!(
         ".install-{}-{}-{}",
         entry.provider, entry.model, now
@@ -1837,49 +1784,7 @@ fn install_temp_bundle_path(entry: &ProviderCatalogEntry) -> Result<PathBuf> {
 }
 
 fn providers_root() -> Result<PathBuf> {
-    Ok(data_root()?.join(PROVIDER_BUNDLES_DIR))
-}
-
-fn config_root() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(REDACTED_CONFIG_HOME_OVERRIDE) {
-        return Ok(PathBuf::from(path));
-    }
-    if cfg!(windows) {
-        if let Ok(path) = std::env::var("APPDATA") {
-            return Ok(PathBuf::from(path).join("redacted"));
-        }
-    }
-    if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(path).join("redacted"));
-    }
-    Ok(home_dir()?.join(".config").join("redacted"))
-}
-
-fn data_root() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(REDACTED_DATA_HOME_OVERRIDE) {
-        return Ok(PathBuf::from(path));
-    }
-    if cfg!(windows) {
-        if let Ok(path) = std::env::var("APPDATA") {
-            return Ok(PathBuf::from(path).join("redacted"));
-        }
-    }
-    if let Ok(path) = std::env::var("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(path).join("redacted"));
-    }
-    Ok(home_dir()?.join(".local").join("share").join("redacted"))
-}
-
-fn home_dir() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var("HOME") {
-        return Ok(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("USERPROFILE") {
-        return Ok(PathBuf::from(path));
-    }
-    Err(RedactError::Config(
-        "Cannot determine home directory for provider state.".into(),
-    ))
+    Ok(app_paths::data_root()?.join(PROVIDER_BUNDLES_DIR))
 }
 
 fn resolve_catalog_entry(selector: &str) -> Result<&'static ProviderCatalogEntry> {
@@ -2110,21 +2015,6 @@ with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as ha
         )));
     }
     Ok(())
-}
-
-fn unix_timestamp_now() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| RedactError::Config(format!("System time error: {}", error)))?
-        .as_secs())
-}
-
-fn yes_or_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
 }
 
 fn json_escape(input: &str) -> String {

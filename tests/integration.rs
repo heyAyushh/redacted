@@ -652,6 +652,35 @@ fn privacy_filter_reports_invalid_runner_json() {
 
 #[cfg(unix)]
 #[test]
+fn privacy_filter_directory_provider_error_marks_files_and_continues() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_dir_provider_error");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "malformed".into()));
+
+    let input_dir = data_root.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), "Alice emailed user@example.com").unwrap();
+    fs::write(input_dir.join("b.txt"), "Alice was born on 1990-01-02").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--privacy-filter",
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("\"path\": \"a.txt\""));
+    assert!(stderr.contains("\"path\": \"b.txt\""));
+    assert!(stderr.contains("\"files_errored\": 2"));
+    assert!(stderr.contains("Invalid provider response JSON"));
+}
+
+#[cfg(unix)]
+#[test]
 fn privacy_filter_rejects_non_boundary_provider_spans() {
     let (config_root, data_root, mut envs) = provider_env("privacy_bad_span");
     install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);

@@ -25,7 +25,7 @@ This is a production-grade Rust CLI tool (`redacted`) for redacting secrets and 
 
 ### Key Gotchas
 
-- No subcommand — use `cargo run -- --text "..."` directly, not `cargo run -- redact --text "..."`.
+- Main redaction has no `redact` subcommand — use `cargo run -- --text "..."` directly. Management flows do have subcommands: `provider`, `document`, `benchmark`, and `except`.
 - IPv4 and IPv6 share the same detector name `IP` → marker is `[REDACTED:IP]`.
 - Filesystem paths (absolute, relative, ~, Windows) are detected → `[REDACTED:PATH]`.
 - The custom pattern matcher is intentionally limited (no backreferences, bounded repetition) to prevent ReDoS.

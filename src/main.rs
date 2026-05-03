@@ -1,3 +1,4 @@
+mod app_paths;
 mod benchmark;
 mod cli;
 mod config;
@@ -527,13 +528,24 @@ fn process_directory(
                     };
                 let text = loaded.text;
 
-                let decisions = decide_findings(
+                let decisions = match decide_findings(
                     &text,
                     config,
                     registry,
                     provider_session.as_deref_mut(),
                     except_rules,
-                )?;
+                ) {
+                    Ok(decisions) => decisions,
+                    Err(error) => {
+                        results.push(FileResult {
+                            path: relative.display().to_string(),
+                            findings_count: 0,
+                            findings: vec![],
+                            status: FileStatus::Error(error.to_string()),
+                        });
+                        continue;
+                    }
+                };
                 let reportable = reportable_findings(&decisions);
                 let redactions = redacted_findings(&decisions);
                 let finding_count = reportable.len();

@@ -1,13 +1,12 @@
 use crate::cli::{print_document_help, DocumentArgs, DocumentHelpTopic, DocumentSubcommand};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
 use crate::io_safe;
-use std::collections::HashMap;
+use crate::{app_paths, app_paths::yes_or_no};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const ACTIVE_DOCUMENT_STATE_FILE: &str = "active-document-adapter.state";
@@ -15,9 +14,6 @@ const VERIFIED_DOCUMENT_STATE_FILE: &str = "verified.state";
 const DOCUMENT_BUNDLE_MANIFEST_FILE: &str = "bundle.state";
 const DOCUMENT_BUNDLES_DIR: &str = "document-adapters";
 const DOCUMENT_RUNNER_DIR: &str = "runner";
-
-const REDACTED_CONFIG_HOME_OVERRIDE: &str = "REDACTED_CONFIG_HOME";
-const REDACTED_DATA_HOME_OVERRIDE: &str = "REDACTED_DATA_HOME";
 
 const PDF_INSPECTOR_ALIAS: &str = "pdf-inspector";
 const PDF_INSPECTOR_TARGET: &str = "pdf-inspector/local-v1";
@@ -481,7 +477,7 @@ fn verify_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path) -> Re
         &VerifiedState {
             schema_version: DOCUMENT_SCHEMA_VERSION,
             target: entry.target.into(),
-            verified_unix_seconds: unix_timestamp_now()?,
+            verified_unix_seconds: app_paths::unix_timestamp_now()?,
         },
     )?;
     Ok(())
@@ -595,7 +591,7 @@ fn find_catalog_entry_by_target(target: &str) -> Option<&'static DocumentCatalog
 }
 
 fn activate_target(entry: &DocumentCatalogEntry) -> Result<()> {
-    let config_dir = config_root()?;
+    let config_dir = app_paths::config_root()?;
     fs::create_dir_all(&config_dir).map_err(|error| {
         RedactError::Config(format!(
             "Cannot create document config directory '{}': {}",
@@ -634,8 +630,8 @@ fn load_active_state() -> Result<Option<ActiveDocumentState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let values = parse_key_value_file(&path)?;
-    let target = parse_required_value(&values, "target", &path)?;
+    let values = app_paths::parse_key_value_file(&path, "document")?;
+    let target = app_paths::parse_required_value(&values, "target", &path, "document")?;
     Ok(Some(ActiveDocumentState { target }))
 }
 
@@ -651,20 +647,14 @@ fn save_bundle_manifest(bundle_root: &Path, manifest: &BundleManifest) -> Result
 }
 
 fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
-    let values = parse_key_value_file(path)?;
-    let schema_version = parse_required_value(&values, "schema_version", path)?
-        .parse::<u32>()
-        .map_err(|_| {
-            RedactError::Config(format!(
-                "Document metadata '{}' has invalid schema_version.",
-                path.display()
-            ))
-        })?;
+    let values = app_paths::parse_key_value_file(path, "document")?;
+    let schema_version =
+        app_paths::parse_required_u32(&values, "schema_version", path, "document")?;
     Ok(BundleManifest {
         schema_version,
-        target: parse_required_value(&values, "target", path)?,
-        adapter: parse_required_value(&values, "adapter", path)?,
-        runner_rel: parse_required_value(&values, "runner_rel", path)?,
+        target: app_paths::parse_required_value(&values, "target", path, "document")?,
+        adapter: app_paths::parse_required_value(&values, "adapter", path, "document")?,
+        runner_rel: app_paths::parse_required_value(&values, "runner_rel", path, "document")?,
     })
 }
 
@@ -686,13 +676,10 @@ fn has_verified_state(bundle_root: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let values = parse_key_value_file(&path)?;
-    let schema_version = parse_required_value(&values, "schema_version", &path)?
-        .parse::<u32>()
-        .map_err(|_| {
-            RedactError::Config(format!("Invalid schema_version in '{}'.", path.display()))
-        })?;
-    let target = parse_required_value(&values, "target", &path)?;
+    let values = app_paths::parse_key_value_file(&path, "document")?;
+    let schema_version =
+        app_paths::parse_required_u32(&values, "schema_version", &path, "document")?;
+    let target = app_paths::parse_required_value(&values, "target", &path, "document")?;
     Ok(
         schema_version == DOCUMENT_SCHEMA_VERSION
             && find_catalog_entry_by_target(&target).is_some(),
@@ -711,66 +698,8 @@ fn is_bundle_installed(entry: &DocumentCatalogEntry, bundle_root: &Path) -> Resu
     Ok(manifest.target == entry.target && manifest.adapter == entry.adapter)
 }
 
-fn parse_key_value_file(path: &Path) -> Result<HashMap<String, String>> {
-    let content = fs::read_to_string(path).map_err(|error| {
-        RedactError::Config(format!(
-            "Cannot read document metadata '{}': {}",
-            path.display(),
-            error
-        ))
-    })?;
-    let mut values = HashMap::new();
-    for (line_number, raw_line) in content.lines().enumerate() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, value) = line.split_once('=').ok_or_else(|| {
-            RedactError::Config(format!(
-                "Invalid metadata line {} in '{}': {}",
-                line_number + 1,
-                path.display(),
-                raw_line
-            ))
-        })?;
-        values.insert(key.trim().to_string(), value.trim().to_string());
-    }
-    Ok(values)
-}
-
-fn parse_required_value(
-    values: &HashMap<String, String>,
-    key: &str,
-    path: &Path,
-) -> Result<String> {
-    values.get(key).cloned().ok_or_else(|| {
-        RedactError::Config(format!(
-            "Document metadata '{}' is missing key '{}'.",
-            path.display(),
-            key
-        ))
-    })
-}
-
-fn yes_or_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
-fn unix_timestamp_now() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            RedactError::Config(format!("System clock error while saving state: {}", error))
-        })?
-        .as_secs())
-}
-
 fn active_state_path() -> Result<PathBuf> {
-    Ok(config_root()?.join(ACTIVE_DOCUMENT_STATE_FILE))
+    Ok(app_paths::config_root()?.join(ACTIVE_DOCUMENT_STATE_FILE))
 }
 
 fn bundle_manifest_path(bundle_root: &Path) -> PathBuf {
@@ -786,54 +715,12 @@ fn bundle_root_for_entry(entry: &DocumentCatalogEntry) -> Result<PathBuf> {
 }
 
 fn temp_bundle_path(entry: &DocumentCatalogEntry) -> Result<PathBuf> {
-    let now = unix_timestamp_now()?;
+    let now = app_paths::unix_timestamp_now()?;
     Ok(adapters_root()?.join(format!(".tmp-{}-{}-{}", entry.provider, entry.model, now)))
 }
 
 fn adapters_root() -> Result<PathBuf> {
-    Ok(data_root()?.join(DOCUMENT_BUNDLES_DIR))
-}
-
-fn config_root() -> Result<PathBuf> {
-    if let Some(override_root) = std::env::var_os(REDACTED_CONFIG_HOME_OVERRIDE) {
-        return Ok(PathBuf::from(override_root));
-    }
-    if cfg!(windows) {
-        if let Some(app_data) = std::env::var_os("APPDATA") {
-            return Ok(PathBuf::from(app_data).join("redacted"));
-        }
-    }
-    if let Some(xdg_config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(xdg_config_home).join("redacted"));
-    }
-    Ok(home_dir()?.join(".config").join("redacted"))
-}
-
-fn data_root() -> Result<PathBuf> {
-    if let Some(override_root) = std::env::var_os(REDACTED_DATA_HOME_OVERRIDE) {
-        return Ok(PathBuf::from(override_root));
-    }
-    if cfg!(windows) {
-        if let Some(app_data) = std::env::var_os("APPDATA") {
-            return Ok(PathBuf::from(app_data).join("redacted"));
-        }
-    }
-    if let Some(xdg_data_home) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(xdg_data_home).join("redacted"));
-    }
-    Ok(home_dir()?.join(".local").join("share").join("redacted"))
-}
-
-fn home_dir() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        return Ok(PathBuf::from(user_profile));
-    }
-    Err(RedactError::Config(
-        "Cannot determine home directory for document adapter state.".into(),
-    ))
+    Ok(app_paths::data_root()?.join(DOCUMENT_BUNDLES_DIR))
 }
 
 #[cfg(test)]
