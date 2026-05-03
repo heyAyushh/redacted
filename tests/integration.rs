@@ -300,6 +300,9 @@ if marker:
         handle.write("start\n")
 
 mode = os.environ.get("FAKE_PROVIDER_MODE", "normal")
+if mode == "exit_with_stderr":
+    sys.stderr.write("provider import failed: missing fake_package\n")
+    sys.exit(7)
 
 for raw_line in sys.stdin:
     line = raw_line.strip()
@@ -671,6 +674,40 @@ fn privacy_filter_reports_invalid_runner_json() {
     );
     assert_eq!(code, 1);
     assert!(stderr.contains("Invalid provider response JSON"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_hides_provider_stderr_by_default() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_stderr_hidden");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "exit_with_stderr".into()));
+
+    let (_stdout, stderr, code) = run_with_env(
+        &["--text", "Alice user@example.com", "--privacy-filter"],
+        &envs,
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("exited without returning a response"));
+    assert!(stderr.contains("Provider stderr was captured but hidden"));
+    assert!(!stderr.contains("missing fake_package"));
+}
+
+#[cfg(unix)]
+#[test]
+fn privacy_filter_can_show_provider_stderr_when_debug_enabled() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_stderr_debug");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "exit_with_stderr".into()));
+    envs.push(("REDACTED_PROVIDER_DEBUG".into(), "1".into()));
+
+    let (_stdout, stderr, code) = run_with_env(
+        &["--text", "Alice user@example.com", "--privacy-filter"],
+        &envs,
+    );
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Provider stderr (truncated):"));
+    assert!(stderr.contains("missing fake_package"));
 }
 
 #[cfg(unix)]

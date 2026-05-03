@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
 const PROVIDER_SCHEMA_VERSION: u32 = 1;
 const PROVIDER_REQUEST_SCHEMA_VERSION: u32 = 1;
@@ -25,6 +27,8 @@ const OPENAI_RUNNER_SCRIPT_NAME: &str = "openai_privacy_runner.py";
 const MLX_RUNNER_SCRIPT_NAME: &str = "mlx_privacy_runner.py";
 const MLX_EMBEDDINGS_PACKAGE: &str = "mlx-embeddings==0.1.0";
 const REDACTED_PROVIDER_PYTHON_OVERRIDE: &str = "REDACTED_PROVIDER_PYTHON";
+const REDACTED_PROVIDER_DEBUG: &str = "REDACTED_PROVIDER_DEBUG";
+const PROVIDER_STDERR_LIMIT_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderAdapterKind {
@@ -107,6 +111,9 @@ pub struct ProviderSession {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr_buffer: Arc<Mutex<String>>,
+    stderr_thread: Option<JoinHandle<()>>,
+    debug_stderr: bool,
     request_counter: u64,
 }
 
@@ -743,9 +750,7 @@ pub fn start_active_session() -> Result<ProviderSession> {
         .arg(&paths.checkpoint)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Provider stderr is intentionally not surfaced because a runner can
-        // accidentally log raw input text that the core must never leak.
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
 
     let mut child = command.spawn().map_err(|error| {
         RedactError::Detection(format!(
@@ -765,12 +770,22 @@ pub fn start_active_session() -> Result<ProviderSession> {
             entry.target
         ))
     })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        RedactError::Detection(format!(
+            "Provider runner for '{}' did not expose stderr",
+            entry.target
+        ))
+    })?;
+    let (stderr_buffer, stderr_thread) = capture_provider_stderr(stderr);
 
     Ok(ProviderSession {
         entry,
         child,
         stdin,
         stdout: BufReader::new(stdout),
+        stderr_buffer,
+        stderr_thread: Some(stderr_thread),
+        debug_stderr: provider_debug_enabled(),
         request_counter: 0,
     })
 }
@@ -806,13 +821,23 @@ pub fn detect_with_session(
     })?;
 
     let mut line = String::new();
-    let bytes_read = session.stdout.read_line(&mut line).map_err(|error| {
-        RedactError::Detection(format!("Failed to read provider response: {}", error))
-    })?;
+    let bytes_read = match session.stdout.read_line(&mut line) {
+        Ok(value) => value,
+        Err(error) => {
+            let message = provider_runner_error_message(
+                session,
+                &format!("Failed to read provider response: {}", error),
+            );
+            return Err(RedactError::Detection(message));
+        }
+    };
     if bytes_read == 0 {
-        return Err(RedactError::Detection(format!(
-            "Provider runner for '{}' exited without returning a response.",
-            session.entry.target
+        return Err(RedactError::Detection(provider_runner_error_message(
+            session,
+            &format!(
+                "Provider runner for '{}' exited without returning a response.",
+                session.entry.target
+            ),
         )));
     }
 
@@ -895,7 +920,84 @@ impl Drop for ProviderSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(thread) = self.stderr_thread.take() {
+            let _ = thread.join();
+        }
     }
+}
+
+fn provider_debug_enabled() -> bool {
+    std::env::var_os(REDACTED_PROVIDER_DEBUG)
+        .and_then(|value| value.into_string().ok())
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn capture_provider_stderr(mut stderr: ChildStderr) -> (Arc<Mutex<String>>, JoinHandle<()>) {
+    let buffer = Arc::new(Mutex::new(String::new()));
+    let thread_buffer = Arc::clone(&buffer);
+    let handle = thread::spawn(move || {
+        let mut chunk = [0u8; 512];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(bytes_read) => {
+                    let text = String::from_utf8_lossy(&chunk[..bytes_read]);
+                    if let Ok(mut output) = thread_buffer.lock() {
+                        append_truncated(&mut output, &text, PROVIDER_STDERR_LIMIT_BYTES);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    (buffer, handle)
+}
+
+fn append_truncated(output: &mut String, text: &str, limit_bytes: usize) {
+    if output.len() >= limit_bytes {
+        return;
+    }
+    let remaining = limit_bytes - output.len();
+    let end = previous_char_boundary(text, remaining.min(text.len()));
+    output.push_str(&text[..end]);
+}
+
+fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
+    if max_bytes >= value.len() {
+        return value.len();
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn provider_runner_error_message(session: &mut ProviderSession, base: &str) -> String {
+    if matches!(session.child.try_wait(), Ok(Some(_))) {
+        if let Some(thread) = session.stderr_thread.take() {
+            let _ = thread.join();
+        }
+    }
+    let mut message = base.to_string();
+    let stderr = session
+        .stderr_buffer
+        .lock()
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    if session.debug_stderr && !stderr.is_empty() {
+        message.push_str("\nProvider stderr (truncated):\n");
+        message.push_str(&stderr);
+    } else if !stderr.is_empty() {
+        message.push_str(&format!(
+            "\nProvider stderr was captured but hidden to avoid leaking scanned text. Set {}=1 to show a truncated excerpt.",
+            REDACTED_PROVIDER_DEBUG
+        ));
+    }
+    message
 }
 
 fn format_provider_list() -> Result<String> {
@@ -2219,37 +2321,70 @@ impl<'a> JsonParser<'a> {
     fn parse_string(&mut self) -> std::result::Result<String, String> {
         self.expect_byte(b'"')?;
         let mut output = String::new();
-        while let Some(byte) = self.next_byte() {
+        loop {
+            let byte = self
+                .peek_byte()
+                .ok_or_else(|| "unterminated string".to_string())?;
             match byte {
-                b'"' => return Ok(output),
-                b'\\' => {
-                    let escaped = self
-                        .next_byte()
-                        .ok_or_else(|| "unterminated escape sequence".to_string())?;
-                    match escaped {
-                        b'"' => output.push('"'),
-                        b'\\' => output.push('\\'),
-                        b'/' => output.push('/'),
-                        b'b' => output.push('\u{0008}'),
-                        b'f' => output.push('\u{000C}'),
-                        b'n' => output.push('\n'),
-                        b'r' => output.push('\r'),
-                        b't' => output.push('\t'),
-                        b'u' => {
-                            let code_point = self.parse_unicode_escape()?;
-                            let character = char::from_u32(code_point)
-                                .ok_or_else(|| "invalid unicode escape".to_string())?;
-                            output.push(character);
-                        }
-                        other => {
-                            return Err(format!("unsupported escape byte '{}'", other as char));
-                        }
-                    }
+                b'"' => {
+                    self.position += 1;
+                    return Ok(output);
                 }
-                other => output.push(other as char),
+                b'\\' => {
+                    self.position += 1;
+                    output.push(self.parse_escaped_character()?);
+                }
+                0x00..=0x1f => return Err("unescaped control character in string".into()),
+                _ => {
+                    let start = self.position;
+                    while let Some(current) = self.peek_byte() {
+                        if current == b'"' || current == b'\\' || current <= 0x1f {
+                            break;
+                        }
+                        self.position += 1;
+                    }
+                    let chunk = std::str::from_utf8(&self.bytes[start..self.position])
+                        .map_err(|_| "invalid UTF-8 in JSON string".to_string())?;
+                    output.push_str(chunk);
+                }
             }
         }
-        Err("unterminated string".into())
+    }
+
+    fn parse_escaped_character(&mut self) -> std::result::Result<char, String> {
+        let escaped = self
+            .next_byte()
+            .ok_or_else(|| "unterminated escape sequence".to_string())?;
+        match escaped {
+            b'"' => Ok('"'),
+            b'\\' => Ok('\\'),
+            b'/' => Ok('/'),
+            b'b' => Ok('\u{0008}'),
+            b'f' => Ok('\u{000C}'),
+            b'n' => Ok('\n'),
+            b'r' => Ok('\r'),
+            b't' => Ok('\t'),
+            b'u' => self.parse_unicode_escape_character(),
+            other => Err(format!("unsupported escape byte '{}'", other as char)),
+        }
+    }
+
+    fn parse_unicode_escape_character(&mut self) -> std::result::Result<char, String> {
+        let code_point = self.parse_unicode_escape()?;
+        let scalar = if (0xD800..=0xDBFF).contains(&code_point) {
+            self.expect_byte(b'\\')?;
+            self.expect_byte(b'u')?;
+            let low = self.parse_unicode_escape()?;
+            if !(0xDC00..=0xDFFF).contains(&low) {
+                return Err("invalid unicode surrogate pair".into());
+            }
+            0x10000 + (((code_point - 0xD800) << 10) | (low - 0xDC00))
+        } else if (0xDC00..=0xDFFF).contains(&code_point) {
+            return Err("unexpected low unicode surrogate".into());
+        } else {
+            code_point
+        };
+        char::from_u32(scalar).ok_or_else(|| "invalid unicode escape".to_string())
     }
 
     fn parse_unicode_escape(&mut self) -> std::result::Result<u32, String> {
@@ -2558,6 +2693,24 @@ mod tests {
         assert_eq!(response.request_id, "req-1");
         assert_eq!(response.spans.len(), 1);
         assert_eq!(response.spans[0].label, "private_email");
+    }
+
+    #[test]
+    fn json_parser_preserves_raw_utf8_strings() {
+        let value = JsonParser::new(r#""résumé 日本語""#).parse().unwrap();
+        assert_eq!(value.as_str(), Some("résumé 日本語"));
+    }
+
+    #[test]
+    fn json_parser_handles_unicode_surrogate_pairs() {
+        let value = JsonParser::new(r#""emoji \uD83D\uDE00""#).parse().unwrap();
+        assert_eq!(value.as_str(), Some("emoji 😀"));
+    }
+
+    #[test]
+    fn json_parser_rejects_unpaired_unicode_surrogates() {
+        let error = JsonParser::new(r#""\uD83D""#).parse().unwrap_err();
+        assert!(error.contains("expected byte"));
     }
 
     #[test]
