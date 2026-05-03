@@ -88,7 +88,7 @@ jobs:
           mkdir -p dist
           asset="redacted-${VERSION}-${MATRIX_NAME}.tar.gz"
           tar -C "target/${TARGET}/release" -czf "dist/${asset}" "${BINARY}"
-          shasum -a 256 "dist/${asset}" > "dist/${asset}.sha256"
+          (cd dist && shasum -a 256 "${asset}" > "${asset}.sha256")
 
       - name: Package Windows archive
         if: matrix.archive == 'zip'
@@ -103,7 +103,7 @@ jobs:
           $asset = "redacted-$env:VERSION-$env:MATRIX_NAME.zip"
           Compress-Archive -Path "target/$env:TARGET/release/$env:BINARY" -DestinationPath "dist/$asset" -Force
           $hash = (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLower()
-          "$hash  dist/$asset" | Out-File -Encoding ascii "dist/$asset.sha256"
+          "$hash  $asset" | Out-File -Encoding ascii "dist/$asset.sha256"
 
       - name: Upload release files
         uses: actions/upload-artifact@v4
