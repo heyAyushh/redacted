@@ -1,5 +1,6 @@
 use crate::detector::{Confidence, Finding};
 use crate::json::json_escape;
+use std::cmp::Reverse;
 use std::io::{self, Write};
 
 /// A processed file result for reporting.
@@ -58,7 +59,7 @@ impl Summary {
                 }
             }
         }
-        type_counts.sort_by(|a, b| b.1.cmp(&a.1));
+        type_counts.sort_by_key(|(_, count)| Reverse(*count));
         summary.findings_by_type = type_counts;
         summary
     }
