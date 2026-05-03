@@ -81,34 +81,54 @@ fn run_single_iteration(args: &BenchmarkArgs, iteration: usize) -> Result<Iterat
     })?;
     let elapsed_ms = started.elapsed().as_millis();
 
-    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| {
         RedactError::Detection(format!(
             "Benchmark iteration {} returned invalid UTF-8 JSON output.",
             iteration
         ))
     })?;
 
-    let metrics = IterationMetrics {
-        iteration,
-        elapsed_ms,
-        files_processed: parse_summary_field(&stdout, "files_processed")?,
-        files_skipped: parse_summary_field(&stdout, "files_skipped")?,
-        files_errored: parse_summary_field(&stdout, "files_errored")?,
-        total_findings: parse_summary_field(&stdout, "total_findings")?,
+    let metrics = match parse_iteration_metrics(stdout, iteration, elapsed_ms) {
+        Ok(metrics) => metrics,
+        Err(error) => {
+            if !output.status.success() {
+                return Err(benchmark_iteration_error(iteration, &output));
+            }
+            return Err(error);
+        }
     };
 
     if !output.status.success() && metrics.files_processed == 0 && metrics.files_errored == 0 {
-        let code = output.status.code().unwrap_or(-1);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(RedactError::Detection(format!(
-            "Benchmark iteration {} failed with exit code {}.\n{}",
-            iteration,
-            code,
-            truncate_message(&stderr, 400)
-        )));
+        return Err(benchmark_iteration_error(iteration, &output));
     }
 
     Ok(metrics)
+}
+
+fn parse_iteration_metrics(
+    stdout: &str,
+    iteration: usize,
+    elapsed_ms: u128,
+) -> Result<IterationMetrics> {
+    Ok(IterationMetrics {
+        iteration,
+        elapsed_ms,
+        files_processed: parse_summary_field(stdout, "files_processed")?,
+        files_skipped: parse_summary_field(stdout, "files_skipped")?,
+        files_errored: parse_summary_field(stdout, "files_errored")?,
+        total_findings: parse_summary_field(stdout, "total_findings")?,
+    })
+}
+
+fn benchmark_iteration_error(iteration: usize, output: &std::process::Output) -> RedactError {
+    let code = output.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    RedactError::Detection(format!(
+        "Benchmark iteration {} failed with exit code {}.\n{}",
+        iteration,
+        code,
+        truncate_message(&stderr, 400)
+    ))
 }
 
 fn parse_summary_field(json: &str, field: &str) -> Result<u64> {

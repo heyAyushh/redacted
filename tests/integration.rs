@@ -472,6 +472,32 @@ fn benchmark_accepts_directory_reports_with_file_errors() {
 
 #[cfg(unix)]
 #[test]
+fn benchmark_privacy_filter_reports_missing_provider_error() {
+    let (config_root, _data_root, envs) = provider_env("benchmark_missing_provider");
+    let input_path = config_root.join("sample.txt");
+    fs::write(&input_path, "Alice user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "benchmark",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--privacy-filter",
+            "--iterations",
+            "1",
+        ],
+        &envs,
+    );
+
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Benchmark iteration 1 failed with exit code 2"));
+    assert!(stderr.contains("No active privacy-filter provider is configured"));
+    assert!(!stderr.contains("Benchmark output is not a JSON object"));
+    let _ = fs::remove_dir_all(&config_root);
+}
+
+#[cfg(unix)]
+#[test]
 fn provider_current_without_active_shows_onboarding() {
     let (_config_root, _data_root, envs) = provider_env("provider_current_none");
     let (stdout, _, code) = run_with_env(&["provider", "current"], &envs);
