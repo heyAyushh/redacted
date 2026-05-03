@@ -1,4 +1,5 @@
 use crate::errors::{RedactError, Result};
+use crate::text_utils::capitalize_first;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,7 +88,7 @@ pub fn parse_required_value(
     values.get(key).cloned().ok_or_else(|| {
         RedactError::Config(format!(
             "{} metadata '{}' is missing key '{}'.",
-            capitalize(context),
+            capitalize_first(context),
             path.display(),
             key
         ))
@@ -104,7 +105,7 @@ pub fn parse_required_u32(
     value.parse::<u32>().map_err(|_| {
         RedactError::Config(format!(
             "{} metadata '{}' has invalid {} value '{}'.",
-            capitalize(context),
+            capitalize_first(context),
             path.display(),
             key,
             value
@@ -122,7 +123,7 @@ pub fn parse_required_u64(
     value.parse::<u64>().map_err(|_| {
         RedactError::Config(format!(
             "{} metadata '{}' has invalid {} value '{}'.",
-            capitalize(context),
+            capitalize_first(context),
             path.display(),
             key,
             value
@@ -144,13 +145,5 @@ pub fn yes_or_no(value: bool) -> &'static str {
         "yes"
     } else {
         "no"
-    }
-}
-
-fn capitalize(value: &str) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
     }
 }

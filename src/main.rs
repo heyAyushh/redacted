@@ -12,6 +12,7 @@ mod policy;
 mod provider;
 mod redact;
 mod report;
+mod text_utils;
 mod traverse;
 
 use cli::{BinaryMode, OutputFormat};
@@ -564,12 +565,14 @@ fn process_directory(
                     })
                     .collect();
 
-                // Write redacted output if not dry-run
-                let redacted =
-                    redact::apply_redactions(&text, &redactions, config.replacement.as_deref());
                 let status = FileStatus::Processed;
                 if !config.dry_run {
                     if let Some(ref out_dir) = config.output {
+                        let redacted = redact::apply_redactions(
+                            &text,
+                            &redactions,
+                            config.replacement.as_deref(),
+                        );
                         let out_path = if loaded.from_document_adapter {
                             document_output_path(out_dir, &relative)
                         } else {
@@ -577,6 +580,11 @@ fn process_directory(
                         };
                         io_safe::atomic_write(&out_path, &redacted)?;
                     } else if config.in_place {
+                        let redacted = redact::apply_redactions(
+                            &text,
+                            &redactions,
+                            config.replacement.as_deref(),
+                        );
                         io_safe::atomic_write(&path, &redacted)?;
                     }
                 }

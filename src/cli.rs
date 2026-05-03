@@ -1,4 +1,5 @@
 use crate::errors::{RedactError, Result};
+use crate::text_utils::capitalize_first;
 use std::collections::HashSet;
 use std::env;
 
@@ -1090,14 +1091,6 @@ fn reject_extra_args(
         )));
     }
     Ok(())
-}
-
-fn capitalize_first(value: &str) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
 }
 
 fn parse_except_selector(args: &[String], i: &mut usize) -> Result<ExceptRuleSelector> {

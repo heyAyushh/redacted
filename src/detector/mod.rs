@@ -168,15 +168,14 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
                 // exposed while avoiding detector-name drift for contained matches.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
-                let last_strictly_contains_f = last.start <= f.start
-                    && last.end >= f.end
-                    && (last.start < f.start || last.end > f.end);
-                let contained_secret_overlap =
-                    last_strictly_contains_f && last.category == "secret" && f.category == "secret";
+                let same_secret_category = last.category == "secret" && f.category == "secret";
+                let last_specificity = detector_specificity_rank(last.detector_name);
+                let new_specificity = detector_specificity_rank(f.detector_name);
                 let prefer_new_metadata = f.confidence > last.confidence
                     || (f.confidence == last.confidence
-                        && ((f.end - f.start) > (last.end - last.start)
-                            || contained_secret_overlap));
+                        && ((same_secret_category && new_specificity > last_specificity)
+                            || (new_specificity == last_specificity
+                                && (f.end - f.start) > (last.end - last.start))));
                 if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
@@ -191,6 +190,15 @@ pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
         merged.push(f);
     }
     merged
+}
+
+fn detector_specificity_rank(detector_name: &str) -> u8 {
+    match detector_name {
+        "GENERIC_SECRET" => 0,
+        "HIGH_ENTROPY_SECRET" => 1,
+        "API_KEY" | "PASSWORD" | "SECRET" => 2,
+        _ => 3,
+    }
 }
 
 #[cfg(test)]
@@ -283,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_overlapping_equal_confidence_prefers_contained_detector_name() {
+    fn merge_overlapping_equal_confidence_prefers_specific_detector_name() {
         let findings = vec![
             Finding {
                 detector_name: "HIGH_ENTROPY_SECRET",
@@ -304,9 +312,36 @@ mod tests {
         ];
         let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].detector_name, "GENERIC_SECRET");
+        assert_eq!(merged[0].detector_name, "HIGH_ENTROPY_SECRET");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 40);
+    }
+
+    #[test]
+    fn merge_overlapping_equal_confidence_keeps_specific_secret_over_generic_submatch() {
+        let findings = vec![
+            Finding {
+                detector_name: "AWS_KEY",
+                category: "secret",
+                start: 0,
+                end: 20,
+                confidence: Confidence::High,
+                matched_len: 20,
+            },
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 5,
+                end: 18,
+                confidence: Confidence::High,
+                matched_len: 13,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "AWS_KEY");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 20);
     }
 
     #[test]

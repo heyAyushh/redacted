@@ -1,5 +1,6 @@
 use crate::cli::{print_benchmark_help, BenchmarkArgs, OutputFormat};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
+use crate::text_utils::previous_char_boundary;
 use crate::{app_paths::yes_or_no, io_safe, json::json_escape};
 use std::path::Path;
 use std::process::Command;
@@ -294,17 +295,6 @@ fn truncate_message(message: &str, max_bytes: usize) -> String {
     let mut output = message[..truncation_point].trim().to_string();
     output.push_str("...");
     output
-}
-
-fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
-    if max_bytes >= value.len() {
-        return value.len();
-    }
-    let mut boundary = max_bytes;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    boundary
 }
 
 #[cfg(test)]

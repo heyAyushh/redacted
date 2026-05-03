@@ -2,6 +2,7 @@ use crate::cli::{print_provider_help, ProviderArgs, ProviderHelpTopic, ProviderS
 use crate::detector::{Confidence, Finding};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
 use crate::io_safe;
+use crate::text_utils::previous_char_boundary;
 use crate::{app_paths, app_paths::yes_or_no, json::json_escape};
 use std::collections::HashMap;
 use std::fs;
@@ -962,17 +963,6 @@ fn append_truncated(output: &mut String, text: &str, limit_bytes: usize) {
     let remaining = limit_bytes - output.len();
     let end = previous_char_boundary(text, remaining.min(text.len()));
     output.push_str(&text[..end]);
-}
-
-fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
-    if max_bytes >= value.len() {
-        return value.len();
-    }
-    let mut boundary = max_bytes;
-    while boundary > 0 && !value.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    boundary
 }
 
 fn provider_runner_error_message(session: &mut ProviderSession, base: &str) -> String {

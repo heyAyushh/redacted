@@ -12,4 +12,5 @@ pub mod policy;
 pub mod provider;
 pub mod redact;
 pub mod report;
+pub mod text_utils;
 pub mod traverse;
