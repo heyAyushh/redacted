@@ -859,125 +859,124 @@ fn parse_benchmark_args(args: &[String]) -> Result<CliArgs> {
 }
 
 fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
-    let first = args[0].as_str();
-    if first == "--help" || first == "-h" {
-        return Ok(ProviderArgs {
-            help: Some(ProviderHelpTopic::Root),
-            command: None,
-        });
-    }
-
-    let topic = provider_topic_from_name(first)?;
-    let has_help_flag = args
-        .iter()
-        .skip(1)
-        .any(|arg| arg == "--help" || arg == "-h");
-    if has_help_flag {
-        return Ok(ProviderArgs {
-            help: Some(topic),
-            command: None,
-        });
-    }
-
-    let command = match first {
-        "enable" => {
-            let selector = parse_provider_selector(args, "enable")?;
-            ProviderSubcommand::Enable { selector }
-        }
-        "install" => {
-            let selector = parse_provider_selector(args, "install")?;
-            ProviderSubcommand::Install { selector }
-        }
-        "use" => {
-            let selector = parse_provider_selector(args, "use")?;
-            ProviderSubcommand::Use { selector }
-        }
-        "current" => {
-            reject_extra_args(args, 1, "provider", "current")?;
-            ProviderSubcommand::Current
-        }
-        "list" => {
-            reject_extra_args(args, 1, "provider", "list")?;
-            ProviderSubcommand::List
-        }
-        "verify" => parse_provider_verify(args)?,
-        "disable" => {
-            reject_extra_args(args, 1, "provider", "disable")?;
-            ProviderSubcommand::Disable
-        }
-        other => {
-            return Err(RedactError::Usage(format!(
-                "Unknown provider command '{}'\n  redacted provider --help",
-                other
-            )));
-        }
-    };
-
+    let parsed = parse_managed_command(args, &PROVIDER_COMMAND_SPEC)?;
     Ok(ProviderArgs {
-        help: None,
-        command: Some(command),
+        help: parsed.help.map(provider_help_topic_from_managed),
+        command: parsed.command.map(provider_subcommand_from_managed),
     })
 }
 
 fn parse_document_command(args: &[String]) -> Result<DocumentArgs> {
+    let parsed = parse_managed_command(args, &DOCUMENT_COMMAND_SPEC)?;
+    Ok(DocumentArgs {
+        help: parsed.help.map(document_help_topic_from_managed),
+        command: parsed.command.map(document_subcommand_from_managed),
+    })
+}
+
+struct ManagedCommandSpec {
+    family: &'static str,
+    selector_name: &'static str,
+    example_selector: &'static str,
+}
+
+const PROVIDER_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
+    family: "provider",
+    selector_name: "provider-or-target",
+    example_selector: "openai",
+};
+
+const DOCUMENT_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
+    family: "document",
+    selector_name: "adapter-or-target",
+    example_selector: "pdf-inspector",
+};
+
+enum ManagedHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+enum ManagedSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+struct ManagedArgs {
+    help: Option<ManagedHelpTopic>,
+    command: Option<ManagedSubcommand>,
+}
+
+fn parse_managed_command(args: &[String], spec: &ManagedCommandSpec) -> Result<ManagedArgs> {
     let first = args[0].as_str();
     if first == "--help" || first == "-h" {
-        return Ok(DocumentArgs {
-            help: Some(DocumentHelpTopic::Root),
+        return Ok(ManagedArgs {
+            help: Some(ManagedHelpTopic::Root),
             command: None,
         });
     }
 
-    let topic = document_topic_from_name(first)?;
+    let topic = managed_topic_from_name(first, spec)?;
     let has_help_flag = args
         .iter()
         .skip(1)
         .any(|arg| arg == "--help" || arg == "-h");
     if has_help_flag {
-        return Ok(DocumentArgs {
+        return Ok(ManagedArgs {
             help: Some(topic),
             command: None,
         });
     }
 
     let command = match first {
-        "enable" => DocumentSubcommand::Enable {
-            selector: parse_document_selector(args, "enable")?,
+        "enable" => ManagedSubcommand::Enable {
+            selector: parse_managed_selector(args, "enable", spec)?,
         },
-        "install" => DocumentSubcommand::Install {
-            selector: parse_document_selector(args, "install")?,
+        "install" => ManagedSubcommand::Install {
+            selector: parse_managed_selector(args, "install", spec)?,
         },
-        "use" => DocumentSubcommand::Use {
-            selector: parse_document_selector(args, "use")?,
+        "use" => ManagedSubcommand::Use {
+            selector: parse_managed_selector(args, "use", spec)?,
         },
         "current" => {
-            reject_extra_args(args, 1, "document", "current")?;
-            DocumentSubcommand::Current
+            reject_extra_args(args, 1, spec.family, "current")?;
+            ManagedSubcommand::Current
         }
         "list" => {
-            reject_extra_args(args, 1, "document", "list")?;
-            DocumentSubcommand::List
+            reject_extra_args(args, 1, spec.family, "list")?;
+            ManagedSubcommand::List
         }
-        "verify" => parse_document_verify(args)?,
+        "verify" => parse_managed_verify(args, spec)?,
         "disable" => {
-            reject_extra_args(args, 1, "document", "disable")?;
-            DocumentSubcommand::Disable
+            reject_extra_args(args, 1, spec.family, "disable")?;
+            ManagedSubcommand::Disable
         }
         other => {
             return Err(RedactError::Usage(format!(
-                "Unknown document command '{}'\n  redacted document --help",
-                other
+                "Unknown {} command '{}'\n  redacted {} --help",
+                spec.family, other, spec.family
             )));
         }
     };
 
-    Ok(DocumentArgs {
+    Ok(ManagedArgs {
         help: None,
         command: Some(command),
     })
 }
 
-fn parse_document_verify(args: &[String]) -> Result<DocumentSubcommand> {
+fn parse_managed_verify(args: &[String], spec: &ManagedCommandSpec) -> Result<ManagedSubcommand> {
     let mut selector: Option<String> = None;
     let mut all = false;
     let mut index = 1;
@@ -987,9 +986,11 @@ fn parse_document_verify(args: &[String]) -> Result<DocumentSubcommand> {
             "--all" => all = true,
             value => {
                 if selector.is_some() || all {
-                    return Err(RedactError::Usage(
-                        "Document verify accepts one selector or --all.\n  redacted document verify pdf-inspector\n  redacted document verify --all".into(),
-                    ));
+                    let display_family = capitalize_first(spec.family);
+                    return Err(RedactError::Usage(format!(
+                        "{} verify accepts one selector or --all.\n  redacted {} verify {}\n  redacted {} verify --all",
+                        display_family, spec.family, spec.example_selector, spec.family
+                    )));
                 }
                 selector = Some(value.to_string());
             }
@@ -997,84 +998,93 @@ fn parse_document_verify(args: &[String]) -> Result<DocumentSubcommand> {
         index += 1;
     }
 
-    Ok(DocumentSubcommand::Verify { selector, all })
+    Ok(ManagedSubcommand::Verify { selector, all })
 }
 
-fn parse_provider_verify(args: &[String]) -> Result<ProviderSubcommand> {
-    let mut selector: Option<String> = None;
-    let mut all = false;
-    let mut index = 1;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--all" => {
-                all = true;
-            }
-            value => {
-                if selector.is_some() || all {
-                    return Err(RedactError::Usage(
-                        "Provider verify accepts one selector or --all.\n  redacted provider verify openai\n  redacted provider verify --all".into(),
-                    ));
-                }
-                selector = Some(value.to_string());
-            }
-        }
-        index += 1;
-    }
-
-    Ok(ProviderSubcommand::Verify { selector, all })
-}
-
-fn document_topic_from_name(name: &str) -> Result<DocumentHelpTopic> {
+fn managed_topic_from_name(name: &str, spec: &ManagedCommandSpec) -> Result<ManagedHelpTopic> {
     match name {
-        "enable" => Ok(DocumentHelpTopic::Enable),
-        "install" => Ok(DocumentHelpTopic::Install),
-        "use" => Ok(DocumentHelpTopic::Use),
-        "current" => Ok(DocumentHelpTopic::Current),
-        "list" => Ok(DocumentHelpTopic::List),
-        "verify" => Ok(DocumentHelpTopic::Verify),
-        "disable" => Ok(DocumentHelpTopic::Disable),
+        "enable" => Ok(ManagedHelpTopic::Enable),
+        "install" => Ok(ManagedHelpTopic::Install),
+        "use" => Ok(ManagedHelpTopic::Use),
+        "current" => Ok(ManagedHelpTopic::Current),
+        "list" => Ok(ManagedHelpTopic::List),
+        "verify" => Ok(ManagedHelpTopic::Verify),
+        "disable" => Ok(ManagedHelpTopic::Disable),
         other => Err(RedactError::Usage(format!(
-            "Unknown document command '{}'\n  redacted document --help",
-            other
+            "Unknown {} command '{}'\n  redacted {} --help",
+            spec.family, other, spec.family
         ))),
     }
 }
 
-fn provider_topic_from_name(name: &str) -> Result<ProviderHelpTopic> {
-    match name {
-        "enable" => Ok(ProviderHelpTopic::Enable),
-        "install" => Ok(ProviderHelpTopic::Install),
-        "use" => Ok(ProviderHelpTopic::Use),
-        "current" => Ok(ProviderHelpTopic::Current),
-        "list" => Ok(ProviderHelpTopic::List),
-        "verify" => Ok(ProviderHelpTopic::Verify),
-        "disable" => Ok(ProviderHelpTopic::Disable),
-        other => Err(RedactError::Usage(format!(
-            "Unknown provider command '{}'\n  redacted provider --help",
-            other
-        ))),
-    }
-}
-
-fn parse_document_selector(args: &[String], command: &str) -> Result<String> {
+fn parse_managed_selector(
+    args: &[String],
+    command: &str,
+    spec: &ManagedCommandSpec,
+) -> Result<String> {
     if args.len() != 2 {
+        let display_family = capitalize_first(spec.family);
         return Err(RedactError::Usage(format!(
-            "Document command '{}' requires <adapter-or-target>.\n  redacted document {} pdf-inspector",
-            command, command
+            "{} command '{}' requires <{}>.\n  redacted {} {} {}",
+            display_family,
+            command,
+            spec.selector_name,
+            spec.family,
+            command,
+            spec.example_selector
         )));
     }
     Ok(args[1].clone())
 }
 
-fn parse_provider_selector(args: &[String], command: &str) -> Result<String> {
-    if args.len() != 2 {
-        return Err(RedactError::Usage(format!(
-            "Provider command '{}' requires <provider-or-target>.\n  redacted provider {} openai",
-            command, command
-        )));
+fn provider_help_topic_from_managed(topic: ManagedHelpTopic) -> ProviderHelpTopic {
+    match topic {
+        ManagedHelpTopic::Root => ProviderHelpTopic::Root,
+        ManagedHelpTopic::Enable => ProviderHelpTopic::Enable,
+        ManagedHelpTopic::Install => ProviderHelpTopic::Install,
+        ManagedHelpTopic::Use => ProviderHelpTopic::Use,
+        ManagedHelpTopic::Current => ProviderHelpTopic::Current,
+        ManagedHelpTopic::List => ProviderHelpTopic::List,
+        ManagedHelpTopic::Verify => ProviderHelpTopic::Verify,
+        ManagedHelpTopic::Disable => ProviderHelpTopic::Disable,
     }
-    Ok(args[1].clone())
+}
+
+fn document_help_topic_from_managed(topic: ManagedHelpTopic) -> DocumentHelpTopic {
+    match topic {
+        ManagedHelpTopic::Root => DocumentHelpTopic::Root,
+        ManagedHelpTopic::Enable => DocumentHelpTopic::Enable,
+        ManagedHelpTopic::Install => DocumentHelpTopic::Install,
+        ManagedHelpTopic::Use => DocumentHelpTopic::Use,
+        ManagedHelpTopic::Current => DocumentHelpTopic::Current,
+        ManagedHelpTopic::List => DocumentHelpTopic::List,
+        ManagedHelpTopic::Verify => DocumentHelpTopic::Verify,
+        ManagedHelpTopic::Disable => DocumentHelpTopic::Disable,
+    }
+}
+
+fn provider_subcommand_from_managed(command: ManagedSubcommand) -> ProviderSubcommand {
+    match command {
+        ManagedSubcommand::Enable { selector } => ProviderSubcommand::Enable { selector },
+        ManagedSubcommand::Install { selector } => ProviderSubcommand::Install { selector },
+        ManagedSubcommand::Use { selector } => ProviderSubcommand::Use { selector },
+        ManagedSubcommand::Current => ProviderSubcommand::Current,
+        ManagedSubcommand::List => ProviderSubcommand::List,
+        ManagedSubcommand::Verify { selector, all } => ProviderSubcommand::Verify { selector, all },
+        ManagedSubcommand::Disable => ProviderSubcommand::Disable,
+    }
+}
+
+fn document_subcommand_from_managed(command: ManagedSubcommand) -> DocumentSubcommand {
+    match command {
+        ManagedSubcommand::Enable { selector } => DocumentSubcommand::Enable { selector },
+        ManagedSubcommand::Install { selector } => DocumentSubcommand::Install { selector },
+        ManagedSubcommand::Use { selector } => DocumentSubcommand::Use { selector },
+        ManagedSubcommand::Current => DocumentSubcommand::Current,
+        ManagedSubcommand::List => DocumentSubcommand::List,
+        ManagedSubcommand::Verify { selector, all } => DocumentSubcommand::Verify { selector, all },
+        ManagedSubcommand::Disable => DocumentSubcommand::Disable,
+    }
 }
 
 fn reject_extra_args(

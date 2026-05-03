@@ -77,13 +77,9 @@ fn run() -> errors::Result<i32> {
         &config.deny_patterns,
         &config.patterns,
     );
-    let mut provider_session = if config.privacy_filter {
-        Some(provider::start_active_session()?)
-    } else {
-        None
-    };
     // Determine input source (priority: text > input > stdin)
     if let Some(ref text) = config.text {
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
         return process_text(
             text,
             &config,
@@ -103,6 +99,7 @@ fn run() -> errors::Result<i32> {
             )));
         }
 
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
         let mut document_session = if config.document_adapter {
             Some(document::start_active_session()?)
         } else {
@@ -138,6 +135,7 @@ fn run() -> errors::Result<i32> {
     // stdin fallback
     if io_safe::stdin_is_piped() {
         let text = io_safe::read_stdin()?;
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
         return process_text(
             &text,
             &config,
@@ -168,6 +166,14 @@ fn ensure_document_adapter_uses_input_path(config: &Config) -> errors::Result<()
         ));
     }
     Ok(())
+}
+
+fn start_provider_session_if_enabled(config: &Config) -> errors::Result<Option<ProviderSession>> {
+    if config.privacy_filter {
+        Ok(Some(provider::start_active_session()?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn collect_findings(

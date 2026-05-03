@@ -620,6 +620,16 @@ fn privacy_filter_requires_active_provider() {
 
 #[cfg(unix)]
 #[test]
+fn privacy_filter_without_input_does_not_start_provider() {
+    let (_config_root, _data_root, envs) = provider_env("privacy_without_input");
+    let (_stdout, stderr, code) = run_with_env(&["--privacy-filter"], &envs);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("No input provided"));
+    assert!(!stderr.contains("No active privacy-filter provider is configured"));
+}
+
+#[cfg(unix)]
+#[test]
 fn document_adapter_requires_active_adapter() {
     let (config_root, _data_root, mut envs) = provider_env("document_requires_active");
     add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
