@@ -163,16 +163,18 @@ fn collect_findings(
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
 ) -> errors::Result<Vec<detector::Finding>> {
-    let mut findings = registry.detect_all(text);
-    if let Some(session) = provider_session {
-        let provider_findings = provider::detect_with_session(
-            session,
-            text,
-            &config.allow_patterns,
-            &config.deny_patterns,
-        )?;
-        findings.extend(provider_findings);
-    }
+    let Some(session) = provider_session else {
+        return Ok(registry.detect_all(text));
+    };
+
+    let mut findings = registry.detect_all_unmerged(text);
+    let provider_findings = provider::detect_with_session(
+        session,
+        text,
+        &config.allow_patterns,
+        &config.deny_patterns,
+    )?;
+    findings.extend(provider_findings);
     findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     Ok(detector::merge_findings(findings))
 }

@@ -135,15 +135,20 @@ impl DetectorRegistry {
         registry
     }
 
-    /// Run all detectors against text. Returns findings sorted by start position.
-    /// Merges overlapping findings, keeping the higher-confidence one.
-    pub fn detect_all(&self, text: &str) -> Vec<Finding> {
+    /// Run all detectors against text. Returns unmerged findings sorted by start position.
+    pub fn detect_all_unmerged(&self, text: &str) -> Vec<Finding> {
         let mut findings: Vec<Finding> = Vec::new();
         for detector in &self.detectors {
             findings.extend(detector.detect(text));
         }
         findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
-        merge_findings(findings)
+        findings
+    }
+
+    /// Run all detectors against text. Returns findings sorted by start position.
+    /// Merges overlapping findings, keeping the higher-confidence one.
+    pub fn detect_all(&self, text: &str) -> Vec<Finding> {
+        merge_findings(self.detect_all_unmerged(text))
     }
 
     #[allow(dead_code)]
@@ -206,6 +211,26 @@ fn detector_specificity_rank(detector_name: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixedDetector {
+        name: &'static str,
+        category: &'static str,
+        findings: Vec<Finding>,
+    }
+
+    impl Detector for FixedDetector {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn category(&self) -> &'static str {
+            self.category
+        }
+
+        fn detect(&self, _text: &str) -> Vec<Finding> {
+            self.findings.clone()
+        }
+    }
 
     #[test]
     fn masked_sample_short() {
@@ -405,5 +430,40 @@ mod tests {
         let registry = DetectorRegistry::build_default(&["EMAIL".to_string()], &[], &[]);
         let names = registry.detector_names();
         assert_eq!(names, vec!["EMAIL"]);
+    }
+
+    #[test]
+    fn detector_registry_can_return_unmerged_findings() {
+        let mut registry = DetectorRegistry::new();
+        registry.register(Box::new(FixedDetector {
+            name: "fixed",
+            category: "test",
+            findings: vec![
+                Finding {
+                    detector_name: "FIRST",
+                    category: "test",
+                    start: 0,
+                    end: 10,
+                    confidence: Confidence::Medium,
+                    matched_len: 10,
+                },
+                Finding {
+                    detector_name: "SECOND",
+                    category: "test",
+                    start: 5,
+                    end: 15,
+                    confidence: Confidence::Medium,
+                    matched_len: 10,
+                },
+            ],
+        }));
+
+        let unmerged = registry.detect_all_unmerged("0123456789012345");
+        assert_eq!(unmerged.len(), 2);
+
+        let merged = registry.detect_all("0123456789012345");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 15);
     }
 }
