@@ -567,7 +567,7 @@ fn process_directory(
                 // Write redacted output if not dry-run
                 let redacted =
                     redact::apply_redactions(&text, &redactions, config.replacement.as_deref());
-                let mut status = FileStatus::Processed;
+                let status = FileStatus::Processed;
                 if !config.dry_run {
                     if let Some(ref out_dir) = config.output {
                         let out_path = if loaded.from_document_adapter {
@@ -577,13 +577,7 @@ fn process_directory(
                         };
                         io_safe::atomic_write(&out_path, &redacted)?;
                     } else if config.in_place {
-                        if loaded.from_document_adapter {
-                            status = FileStatus::Error(
-                                "Cannot use --in-place with --document-adapter for document files. Use --output instead.".into(),
-                            );
-                        } else {
-                            io_safe::atomic_write(&path, &redacted)?;
-                        }
+                        io_safe::atomic_write(&path, &redacted)?;
                     }
                 }
 
