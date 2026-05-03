@@ -24,3 +24,12 @@ target
 # Added by cargo
 
 /target
+
+# Local release artifacts
+/dist/
+
+# Local banner drafts and downloaded logo references
+/assets/readme-banner-*.png
+/assets/readme-banner-*.svg
+/assets/mlx_logo_dark.png
+/assets/vendor/
