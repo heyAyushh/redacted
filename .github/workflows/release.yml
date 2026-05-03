@@ -140,21 +140,17 @@ jobs:
             exit 2
           fi
 
-          cat > RELEASE_NOTES.md <<NOTES
-          ## Install
-
-          Download the archive for your platform, unpack it, and run:
-
-          ```bash
-          ./redacted --help
-          ```
-
-          ## Local build
-
-          ```bash
-          cargo install --git https://github.com/${REPOSITORY} --tag ${VERSION} --force
-          ```
-          NOTES
+          {
+            printf '%s\n\n' '## Install'
+            printf '%s\n\n' 'Download the archive for your platform, unpack it, and run:'
+            printf '%s\n' '```bash'
+            printf '%s\n' './redacted --help'
+            printf '%s\n\n' '```'
+            printf '%s\n\n' '## Local build'
+            printf '%s\n' '```bash'
+            printf 'cargo install --git https://github.com/%s --tag %s --force\n' "${REPOSITORY}" "${VERSION}"
+            printf '%s\n' '```'
+          } > RELEASE_NOTES.md
 
           args=(
             "${VERSION}"
