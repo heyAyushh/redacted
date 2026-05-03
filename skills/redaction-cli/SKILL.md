@@ -10,6 +10,8 @@ Use this skill whenever you are working on the `redacted` binary crate — addin
 
 `redacted` is a production-grade, zero-dependency Rust CLI that scans text and files for secrets and personally identifiable information (PII), replaces matches with safe placeholders, and optionally produces structured JSON reports. It is designed for CI pipelines, log sanitisation, and pre-publish checks.
 
+The default scan path is Rust-only, offline, dependency-free, and does not download models. Optional privacy-filter providers and document adapters are explicit external runtime boundaries. They are installed separately, verified separately, and only run when their feature flag is passed.
+
 ---
 
 ## 2. Security-First Development Rules
@@ -28,6 +30,8 @@ These rules are non-negotiable. Every change must satisfy all of them.
 | S8 | **Binary files are skipped by default.** `BinaryMode::Skip` is the default; detection uses null-byte and non-text-byte heuristics in `io_safe::is_binary`. |
 | S9 | **Error messages must never contain secret values.** Paths and byte counts are fine; matched content is not. |
 | S10 | **Custom patterns are bounded.** The mini-regex engine in `detector/custom.rs` caps repetitions at 4096 and uses non-backtracking greedy matching to prevent ReDoS. |
+| S11 | **Scans never install or download providers/adapters.** Downloads only happen through explicit setup commands such as `redacted provider install ...`, `redacted provider enable ...`, or document-adapter equivalents. |
+| S12 | **Provider and document runners are lower-trust external boundaries.** Validate bundle-relative paths, verify artifacts by size and SHA-256, keep stderr hidden by default, and never let external runners own final redaction output. |
 
 ---
 
@@ -44,6 +48,8 @@ src/
 │   ├── secrets.rs     Built-in secret detectors (AWS, JWT, Bearer, Stripe, GitHub, Slack, etc.)
 │   ├── pii.rs         Built-in PII detectors (Email, Phone, IPv4/IPv6 scanners → unified `IP` / `[REDACTED:IP]`, Path, CreditCard, SSN)
 │   └── custom.rs      User-supplied patterns via --pattern; mini-regex compiler + matcher
+├── provider.rs        Optional privacy-filter provider catalog, install/verify/use, runner session ABI
+├── document.rs        Optional document-adapter catalog, install/verify/use, document extraction
 ├── redact.rs          apply_redactions() — replaces finding spans with placeholders
 ├── io_safe.rs         Atomic writes, binary detection, stdin piping, file reads with size limits
 ├── traverse.rs        Recursive directory walker with symlink, hidden-file, and depth guards
@@ -74,6 +80,10 @@ These defaults are baked into `CliArgs::default()` and must not be weakened:
 | `max_file_size` | 25 MiB | Prevents OOM on huge files |
 | `max_depth` | 256 | Prevents infinite recursion from symlink loops |
 | Replacement | `[REDACTED:<TYPE>]` | Makes it clear what was removed and why |
+| Privacy filter | `false` | Optional provider pass is off unless `--privacy-filter` is passed |
+| Document adapter | `false` | Optional document extraction is off unless `--document-adapter` is passed |
+
+Provider and document-adapter setup state is persistent, but scan-time behavior is still opt-in by flag.
 
 ---
 
@@ -115,10 +125,19 @@ Same steps as above, but in `src/detector/pii.rs` with `category()` returning `"
 Run all three before every commit:
 
 ```bash
-cargo test            # Unit + integration tests
-cargo clippy          # Lint — must pass with zero warnings
-cargo fmt --check     # Format check — must pass
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked
 ```
+
+For release or CI workflow changes, also run:
+
+```bash
+cargo build --release --locked
+git diff --check
+```
+
+The regular test suite uses fake provider/document runners. It must not download OPF, MLX, model artifacts, or document adapter bundles.
 
 ### Test conventions
 
@@ -168,43 +187,79 @@ All traversal logic lives in `src/traverse.rs`.
 
 ## 10. Common Tasks — Examples
 
+### Install as a user
+
+```bash
+cargo install --git https://github.com/heyAyushh/redacted --locked
+redacted --version
+```
+
+This installs the Rust CLI only. It must not download optional provider models.
+
 ### Redact a single string
 
 ```bash
-cargo run -- --text "email me at user@example.com"
+redacted --text "email me at user@example.com"
 # Output: email me at [REDACTED:EMAIL]
 ```
 
 ### Pipe from stdin
 
 ```bash
-echo "token=sk_live_abc123def456" | cargo run --
+echo "password=correct-horse-battery-staple" | redacted
 ```
 
 ### Scan a directory, write redacted copies
 
 ```bash
-cargo run -- --input logs/ --output cleaned/ --summary
+redacted --input logs/ --output cleaned/ --summary
 ```
 
 ### Dry-run with fail-on-find (CI gate)
 
 ```bash
-cargo run -- --input . --fail-on-find --dry-run
+redacted --input . --fail-on-find --dry-run
 # Exits 3 if any secrets/PII found; exits 0 if clean.
 ```
 
 ### Use a config file
 
 ```bash
-cargo run -- --input data/ --output clean/ --config redact.toml
+redacted --input data/ --output clean/ --config redact.toml
 ```
 
 ### Add a one-off custom pattern
 
 ```bash
-cargo run -- --text "code PROJ-9999" --pattern "PROJECT=PROJ-\\d+"
+redacted --text "code PROJ-9999" --pattern "PROJECT=PROJ-\\d+"
 ```
+
+### Enable the supported OpenAI privacy-filter provider
+
+```bash
+redacted provider enable openai
+redacted --privacy-filter --input logs/
+```
+
+`openai` resolves to the pinned exact target `openai/privacy-filter-v1`. Setup may download and verify the external provider bundle. Later scans with `--privacy-filter` must not download anything.
+
+### Enable the experimental MLX privacy-filter provider
+
+```bash
+redacted provider enable mlx
+redacted --privacy-filter --text "Jane Doe emailed jane@example.com"
+```
+
+`mlx` resolves to `openai/privacy-filter-v1-mlx` and uses the pinned MLX-converted OpenAI Privacy Filter model. It is experimental and still follows the same span-only provider contract.
+
+### Use the document adapter
+
+```bash
+redacted document enable pdf
+redacted --input report.pdf --document-adapter
+```
+
+Document adapters extract text first. The core detector, merge, policy, redaction, and reporting pipeline still belongs to `redacted`.
 
 ---
 
@@ -240,16 +295,85 @@ If you are tempted to reach for a dependency, here is how the codebase solves co
 | Atomic file I/O | `io_safe::atomic_write` |
 | Error handling | `errors::RedactError` enum + `Result<T>` alias |
 | Checksums (Luhn) | `pii::luhn_check` |
+| Checksums (SHA-256) | Hand-rolled SHA-256 in `provider.rs`; keep boundary vectors covered by tests |
+
+## 13. Optional Provider Architecture
+
+Use `provider` as the public CLI noun and `adapter` as the internal implementation noun.
+
+Supported targets:
+
+| Alias | Exact target | Status |
+|-------|--------------|--------|
+| `openai` | `openai/privacy-filter-v1` | Supported |
+| `mlx` | `openai/privacy-filter-v1-mlx` | Experimental |
+
+Provider commands:
+
+```bash
+redacted provider enable <provider-or-target>
+redacted provider install <provider-or-target>
+redacted provider use <provider-or-target>
+redacted provider current
+redacted provider list
+redacted provider verify [<provider-or-target> | --all]
+redacted provider disable
+```
+
+Rules:
+
+- `enable` is the human-friendly path: install if missing, verify, then activate.
+- `install` downloads and verifies without activating.
+- `use` switches only to an installed, verified target.
+- Aliases must resolve to pinned exact targets and print the resolved target.
+- `--privacy-filter` fails fast if no active provider is configured.
+- Provider responses contain labels and byte spans only. They must not contain raw matched text or redacted text.
+- Core maps provider labels into canonical detector names and applies existing policy/report/redaction logic once after merging findings.
+- Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output.
+
+Provider runner request:
+
+```json
+{"schema_version":1,"request_id":"...","text":"..."}
+```
+
+Provider runner response:
+
+```json
+{"schema_version":1,"request_id":"...","target":"openai/privacy-filter-v1","spans":[{"label":"private_email","start":40,"end":61}]}
+```
+
+## 14. Optional Document Adapter Architecture
+
+Document adapter commands mirror provider commands:
+
+```bash
+redacted document enable <adapter-or-target>
+redacted document install <adapter-or-target>
+redacted document use <adapter-or-target>
+redacted document current
+redacted document list
+redacted document verify [<adapter-or-target> | --all]
+redacted document disable
+```
+
+Rules:
+
+- Scans with `--document-adapter` never install adapters.
+- `--document-adapter` is valid only for file/directory input, not `--text` or stdin.
+- In-place rewrite is blocked for document-adapter extracted files.
+- Adapter runner paths must be validated as bundle-relative child paths.
+- Adapter output is extracted text only; `redacted` still owns detection and redaction.
 
 ---
 
-## 13. Release Checklist
+## 15. Release Checklist
 
 1. Update `version` in `Cargo.toml`.
-2. Run the full test suite: `cargo test`.
-3. Run lints: `cargo clippy`.
+2. Run the full test suite: `cargo test --locked`.
+3. Run lints: `cargo clippy --all-targets --all-features -- -D warnings`.
 4. Run format check: `cargo fmt --check`.
-5. Build the release binary: `cargo build --release`.
+5. Build the release binary: `cargo build --release --locked`.
 6. Verify `--help` and `--version` output the correct version.
 7. Run a quick smoke test: `echo "user@example.com" | ./target/release/redacted`.
 8. Confirm the binary has zero dynamic dependencies beyond libc: `ldd target/release/redacted`.
