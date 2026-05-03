@@ -469,7 +469,7 @@ fn verify_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path) -> Re
             entry.target
         )));
     }
-    ensure_pdftotext_available()?;
+    ensure_document_runtime_available()?;
     save_verified_state(
         bundle_root,
         &VerifiedState {
@@ -509,7 +509,7 @@ fn ensure_ready_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path)
             runner_path.display()
         )));
     }
-    ensure_pdftotext_available()?;
+    ensure_document_runtime_available()?;
     Ok(())
 }
 
@@ -535,12 +535,17 @@ fn bundle_child_path(bundle_root: &Path, rel: &str, field: &str) -> Result<PathB
     Ok(bundle_root.join(rel_path))
 }
 
-fn ensure_pdftotext_available() -> Result<()> {
-    match Command::new("pdftotext").arg("-v").output() {
+fn ensure_document_runtime_available() -> Result<()> {
+    ensure_command_available("pdftotext", &["-v"], "Install poppler, then run")?;
+    ensure_command_available("python3", &["--version"], "Install Python 3, then run")
+}
+
+fn ensure_command_available(command: &str, args: &[&str], guidance: &str) -> Result<()> {
+    match Command::new(command).args(args).output() {
         Ok(_) => Ok(()),
         Err(error) => Err(RedactError::Usage(format!(
-            "Document adapter '{}' requires 'pdftotext' in PATH.\nInstall poppler, then run:\n  redacted document verify {}\nUnderlying error: {}",
-            PDF_INSPECTOR_TARGET, PDF_INSPECTOR_ALIAS, error
+            "Document adapter '{}' requires '{}' in PATH.\n{}:\n  redacted document verify {}\nUnderlying error: {}",
+            PDF_INSPECTOR_TARGET, command, guidance, PDF_INSPECTOR_ALIAS, error
         ))),
     }
 }

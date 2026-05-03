@@ -175,7 +175,6 @@ fn collect_findings(
         &config.deny_patterns,
     )?;
     findings.extend(provider_findings);
-    findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     Ok(detector::merge_findings(findings))
 }
 
