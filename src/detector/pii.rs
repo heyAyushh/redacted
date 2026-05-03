@@ -426,6 +426,8 @@ fn scan_cc_number(bytes: &[u8], start: usize) -> (usize, usize) {
     (pos, digit_count)
 }
 
+// Keep modulo for older stable Rust toolchains where `is_multiple_of` is unavailable.
+#[allow(clippy::manual_is_multiple_of)]
 fn luhn_check(digits: &[u8]) -> bool {
     if digits.len() < 13 {
         return false;
@@ -444,7 +446,7 @@ fn luhn_check(digits: &[u8]) -> bool {
         sum += n;
         double = !double;
     }
-    sum.is_multiple_of(10)
+    sum % 10 == 0
 }
 
 // --- SSN Detector ---

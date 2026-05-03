@@ -743,6 +743,8 @@ pub fn start_active_session() -> Result<ProviderSession> {
         .arg(&paths.checkpoint)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        // Provider stderr is intentionally not surfaced because a runner can
+        // accidentally log raw input text that the core must never leak.
         .stderr(Stdio::null());
 
     let mut child = command.spawn().map_err(|error| {

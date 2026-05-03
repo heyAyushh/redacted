@@ -351,6 +351,13 @@ fn process_single_file(
     document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
+    if config.document_adapter && config.in_place && document::supports_path(path) {
+        return Err(RedactError::Usage(format!(
+            "Cannot use --in-place with --document-adapter for '{}'.\nUse --output <PATH> instead.",
+            path.display()
+        )));
+    }
+
     let loaded = match read_scannable_text(path, config, document_session) {
         Ok(value) => value,
         Err(e) => {
@@ -415,12 +422,6 @@ fn process_single_file(
     } else {
         if !config.dry_run {
             if config.in_place {
-                if loaded.from_document_adapter {
-                    return Err(RedactError::Usage(format!(
-                        "Cannot use --in-place with --document-adapter for '{}'.\nUse --output <PATH> instead.",
-                        path.display()
-                    )));
-                }
                 io_safe::atomic_write(path, &redacted)?;
             } else if let Some(ref out_path) = config.output {
                 io_safe::atomic_write(Path::new(out_path), &redacted)?;

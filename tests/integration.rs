@@ -573,6 +573,29 @@ fn document_adapter_requires_active_adapter() {
 
 #[cfg(unix)]
 #[test]
+fn document_adapter_rejects_single_file_in_place_before_extraction() {
+    let (config_root, data_root, mut envs) = provider_env("document_single_in_place");
+    add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+    install_fake_document_bundle(&config_root, &data_root, &fake_document_runner(), true);
+
+    let pdf_path = data_root.join("report.pdf");
+    fs::write(&pdf_path, "email: user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            pdf_path.to_str().unwrap(),
+            "--document-adapter",
+            "--in-place",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Cannot use --in-place with --document-adapter"));
+}
+
+#[cfg(unix)]
+#[test]
 fn document_adapter_redacts_pdf_with_fake_runner() {
     let (config_root, data_root, mut envs) = provider_env("document_scan_pdf");
     add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
