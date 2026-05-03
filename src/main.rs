@@ -63,6 +63,7 @@ fn run() -> errors::Result<i32> {
     }
 
     let config = Config::from_cli(&cli_args)?;
+    ensure_document_adapter_uses_input_path(&config)?;
     let except_rules =
         if let Some(path) = except::resolve_scan_except_path(config.except_file.as_deref())? {
             except::load_rules(&path)?
@@ -155,6 +156,18 @@ fn run() -> errors::Result<i32> {
          redacted --help"
             .into(),
     ))
+}
+
+fn ensure_document_adapter_uses_input_path(config: &Config) -> errors::Result<()> {
+    if config.document_adapter && config.input.is_none() {
+        return Err(RedactError::Usage(
+            "Cannot use --document-adapter without --input <PATH>.\n\
+             Document adapters only process supported files and directories.\n  \
+             redacted --document-adapter --input <PDF_OR_DIR>"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 fn collect_findings(

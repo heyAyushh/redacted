@@ -175,12 +175,11 @@ pub fn merge_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
                 // unions an unfair size advantage.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
-                let same_secret_category = last.category == "secret" && f.category == "secret";
                 let last_specificity = detector_specificity_rank(last.detector_name);
                 let new_specificity = detector_specificity_rank(f.detector_name);
                 let prefer_new_metadata = f.confidence > last.confidence
                     || (f.confidence == last.confidence
-                        && if same_secret_category && new_specificity != last_specificity {
+                        && if new_specificity != last_specificity {
                             new_specificity > last_specificity
                         } else {
                             f.matched_len > last.matched_len
@@ -426,6 +425,33 @@ mod tests {
         assert_eq!(merged[0].detector_name, "EMAIL");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 20);
+    }
+
+    #[test]
+    fn merge_overlapping_cross_category_prefers_specific_detector_metadata() {
+        let findings = vec![
+            Finding {
+                detector_name: "SECRET",
+                category: "secret",
+                start: 0,
+                end: 24,
+                confidence: Confidence::Medium,
+                matched_len: 24,
+            },
+            Finding {
+                detector_name: "EMAIL",
+                category: "pii",
+                start: 5,
+                end: 21,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "EMAIL");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 24);
     }
 
     #[test]

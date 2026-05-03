@@ -637,16 +637,26 @@ fn document_adapter_requires_active_adapter() {
 
 #[cfg(unix)]
 #[test]
-fn document_adapter_text_input_does_not_require_active_adapter() {
-    let (_config_root, _data_root, envs) = provider_env("document_text_ignores_adapter");
+fn document_adapter_rejects_text_input() {
+    let (_config_root, _data_root, envs) = provider_env("document_text_rejects_adapter");
 
-    let (stdout, stderr, code) = run_with_env(
+    let (_stdout, stderr, code) = run_with_env(
         &["--text", "email: user@example.com", "--document-adapter"],
         &envs,
     );
-    assert_eq!(code, 0, "stderr: {}", stderr);
-    assert!(stdout.contains("[REDACTED:EMAIL]"));
-    assert!(!stderr.contains("No active document adapter is configured"));
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Cannot use --document-adapter without --input"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_adapter_rejects_stdin_input() {
+    let (_config_root, _data_root, envs) = provider_env("document_stdin_rejects_adapter");
+
+    let (_stdout, stderr, code) =
+        run_with_stdin_env(&["--document-adapter"], "email: user@example.com", &envs);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Cannot use --document-adapter without --input"));
 }
 
 #[cfg(unix)]
