@@ -1688,7 +1688,7 @@ fn rewrite_bundle_root_in_text_file(path: &Path, old_root: &str, new_root: &str)
             RedactError::Config(format!("Cannot inspect '{}': {}", path.display(), error))
         })?
         .permissions();
-    fs::write(path, rewritten).map_err(|error| {
+    io_safe::atomic_write(path, &rewritten).map_err(|error| {
         RedactError::Config(format!("Cannot rewrite '{}': {}", path.display(), error))
     })?;
     fs::set_permissions(path, permissions).map_err(|error| {
@@ -2091,7 +2091,6 @@ fn download_file_via_python(url: &str, destination: &Path) -> Result<()> {
             r#"import pathlib, shutil, sys, urllib.request
 url = sys.argv[1]
 dest = pathlib.Path(sys.argv[2])
-dest.parent.mkdir(parents=True, exist_ok=True)
 with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as handle:
     shutil.copyfileobj(response, handle, length=1024 * 1024)
 "#,
