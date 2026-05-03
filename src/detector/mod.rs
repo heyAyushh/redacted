@@ -159,10 +159,11 @@ impl DetectorRegistry {
 
 /// Merge findings after sorting them by `start ASC, end DESC`.
 /// Overlapping spans are unioned to avoid leaving partially exposed matches.
-pub fn merge_findings(findings: Vec<Finding>) -> Vec<Finding> {
+pub fn merge_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
+    findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
     for f in findings {
         if let Some(last) = merged.last_mut() {
@@ -285,6 +286,34 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "b");
         // Span must be the union: 0..15, not 5..15
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 15);
+    }
+
+    #[test]
+    fn merge_findings_sorts_unsorted_input() {
+        let findings = vec![
+            Finding {
+                detector_name: "SECOND",
+                category: "test",
+                start: 5,
+                end: 15,
+                confidence: Confidence::High,
+                matched_len: 10,
+            },
+            Finding {
+                detector_name: "FIRST",
+                category: "test",
+                start: 0,
+                end: 10,
+                confidence: Confidence::Medium,
+                matched_len: 10,
+            },
+        ];
+
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "SECOND");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 15);
     }
