@@ -24,7 +24,7 @@ fn run(args: &[&str]) -> (String, String, i32) {
 }
 
 fn run_with_stdin(args: &[&str], stdin: &str) -> (String, String, i32) {
-    use std::io::Write;
+    use std::io::{ErrorKind, Write};
     use std::process::Stdio;
 
     let mut child = Command::new(binary_path())
@@ -35,12 +35,9 @@ fn run_with_stdin(args: &[&str], stdin: &str) -> (String, String, i32) {
         .spawn()
         .expect("Failed to spawn");
 
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    if let Err(error) = child.stdin.as_mut().unwrap().write_all(stdin.as_bytes()) {
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
 
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -67,7 +64,7 @@ fn run_with_stdin_env(
     stdin: &str,
     envs: &[(String, String)],
 ) -> (String, String, i32) {
-    use std::io::Write;
+    use std::io::{ErrorKind, Write};
     use std::process::Stdio;
 
     let mut command = Command::new(binary_path());
@@ -83,12 +80,9 @@ fn run_with_stdin_env(
         .spawn()
         .expect("Failed to spawn");
 
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    if let Err(error) = child.stdin.as_mut().unwrap().write_all(stdin.as_bytes()) {
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
 
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
