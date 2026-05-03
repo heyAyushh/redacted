@@ -144,6 +144,13 @@ The checked-in provider catalog pins:
 - model artifact byte sizes
 - canonical label mapping
 
+Each installed `bundle.state` also records the relative runner paths and hashes:
+
+- `runner_rel` must stay inside the bundle and, for virtualenv adapters, must be the expected virtualenv Python path.
+- `entry_rel` must stay inside the bundle and match the expected adapter entry script.
+- `runner_sha256` verifies the adapter entry script.
+- `runner_executable_sha256` verifies the launched executable itself.
+
 Current MLX model pin:
 
 ```text

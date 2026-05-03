@@ -16,7 +16,7 @@ use cli::{BinaryMode, OutputFormat};
 use config::Config;
 use detector::DetectorRegistry;
 use document::DocumentSession;
-use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
+use errors::{RedactError, EXIT_ERROR, EXIT_FINDINGS, EXIT_SUCCESS};
 use policy::{FindingAction, FindingDecision};
 use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
@@ -469,6 +469,13 @@ fn process_directory(
                 .into(),
         ));
     }
+    if config.document_adapter && config.in_place {
+        return Err(RedactError::Usage(
+            "Cannot use --in-place with --document-adapter for directory inputs.\n  \
+             Use --output <DIR> so extracted document text is written safely."
+                .into(),
+        ));
+    }
 
     let traverse_config = traverse::TraverseConfig {
         include_hidden: config.include_hidden,
@@ -604,12 +611,17 @@ fn process_directory(
     // Always print minimal summary to stderr for directory mode
     if !config.summary && !config.dry_run && !config.report_json {
         eprintln!(
-            "Processed {} files, {} findings, {} skipped",
-            summary.files_processed, summary.total_findings, summary.files_skipped
+            "Processed {} files, {} findings, {} skipped, {} errored",
+            summary.files_processed,
+            summary.total_findings,
+            summary.files_skipped,
+            summary.files_errored
         );
     }
 
-    if config.fail_on_find && total_findings > 0 {
+    if summary.files_errored > 0 {
+        Ok(EXIT_ERROR)
+    } else if config.fail_on_find && total_findings > 0 {
         Ok(EXIT_FINDINGS)
     } else {
         Ok(EXIT_SUCCESS)

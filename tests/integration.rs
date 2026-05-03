@@ -104,6 +104,26 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+#[cfg(unix)]
+fn sha256_hex_for_test(path: &std::path::Path) -> String {
+    let output = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+        .or_else(|_| Command::new("sha256sum").arg(path).output())
+        .expect("Failed to hash test fixture");
+    assert!(
+        output.status.success(),
+        "hash command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .expect("missing hash output")
+        .to_string()
+}
+
 fn provider_env(name: &str) -> (PathBuf, PathBuf, Vec<(String, String)>) {
     let root = temp_dir(name);
     let config_root = root.join("provider-config");
@@ -156,20 +176,35 @@ fn install_fake_provider_bundle(
         .join("openai")
         .join("privacy-filter-v1");
     fs::create_dir_all(bundle_root.join("runner")).unwrap();
+    fs::create_dir_all(bundle_root.join("venv").join("bin")).unwrap();
     fs::create_dir_all(bundle_root.join("model")).unwrap();
-    let runner_path = bundle_root.join("runner").join("fake_runner.py");
+    let entry_path = bundle_root.join("runner").join("openai_privacy_runner.py");
+    fs::write(
+        &entry_path,
+        "#!/usr/bin/env python3\nimport argparse\nimport json\nimport sys\nfrom opf._api import OPF\n",
+    )
+    .unwrap();
+    fs::set_permissions(&entry_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let runner_path = bundle_root.join("venv").join("bin").join("python");
     fs::write(&runner_path, runner_contents).unwrap();
     fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let runner_sha256 = sha256_hex_for_test(&entry_path);
+    let runner_executable_sha256 = sha256_hex_for_test(&runner_path);
     fs::write(
         bundle_root.join("bundle.state"),
-        "schema_version=1\n\
+        format!(
+            "schema_version=1\n\
 target=openai/privacy-filter-v1\n\
 provider=openai\n\
 model=privacy-filter-v1\n\
 adapter=openai-opf-local\n\
-runner_rel=runner/fake_runner.py\n\
+runner_rel=venv/bin/python\n\
+entry_rel=runner/openai_privacy_runner.py\n\
 checkpoint_rel=model\n\
-runner_sha256=unused\n",
+runner_sha256={}\n\
+runner_executable_sha256={}\n",
+            runner_sha256, runner_executable_sha256
+        ),
     )
     .unwrap();
     fs::write(
@@ -254,6 +289,7 @@ import os
 import sys
 
 parser = argparse.ArgumentParser()
+parser.add_argument("entry", nargs="?")
 parser.add_argument("--target", required=True)
 parser.add_argument("--checkpoint", required=True)
 args = parser.parse_args()
@@ -277,12 +313,15 @@ for raw_line in sys.stdin:
     request = json.loads(line)
     text = request["text"]
     spans = []
-    if text.startswith("Alice"):
-        spans.append({"label": "private_person", "start": 0, "end": 5})
-    date_value = "1990-01-02"
-    if date_value in text:
-        start = text.index(date_value)
-        spans.append({"label": "private_date", "start": start, "end": start + len(date_value)})
+    if mode == "bad_span":
+        spans.append({"label": "private_person", "start": 1, "end": 2})
+    else:
+        if text.startswith("Alice"):
+            spans.append({"label": "private_person", "start": 0, "end": 5})
+        date_value = "1990-01-02"
+        if date_value in text:
+            start = text.index(date_value)
+            spans.append({"label": "private_date", "start": start, "end": start + len(date_value)})
 
     response = {
         "schema_version": 1,
@@ -611,6 +650,18 @@ fn privacy_filter_reports_invalid_runner_json() {
     assert!(stderr.contains("Invalid provider response JSON"));
 }
 
+#[cfg(unix)]
+#[test]
+fn privacy_filter_rejects_non_boundary_provider_spans() {
+    let (config_root, data_root, mut envs) = provider_env("privacy_bad_span");
+    install_fake_provider_bundle(&config_root, &data_root, &fake_provider_runner(), true);
+    envs.push(("FAKE_PROVIDER_MODE".into(), "bad_span".into()));
+
+    let (_stdout, stderr, code) = run_with_env(&["--text", "éAlice", "--privacy-filter"], &envs);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("returned invalid span"));
+}
+
 #[test]
 fn text_redacts_ipv4() {
     let (stdout, _, code) = run(&["--text", "server 192.168.1.100"]);
@@ -886,6 +937,29 @@ fn directory_in_place_without_output_is_allowed() {
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("[REDACTED:EMAIL]"));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_rejects_document_adapter_in_place() {
+    let (config_root, data_root, mut envs) = provider_env("document_dir_in_place");
+    install_fake_document_bundle(&config_root, &data_root, &fake_document_runner(), true);
+    add_fake_pdftotext_to_env(&mut envs, &data_root).unwrap();
+    let input_dir = data_root.join("input");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("report.pdf"), "email: user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--document-adapter",
+            "--in-place",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Cannot use --in-place with --document-adapter"));
 }
 
 #[test]

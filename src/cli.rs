@@ -892,16 +892,16 @@ fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
             ProviderSubcommand::Use { selector }
         }
         "current" => {
-            reject_extra_args(args, 1, "current")?;
+            reject_extra_args(args, 1, "provider", "current")?;
             ProviderSubcommand::Current
         }
         "list" => {
-            reject_extra_args(args, 1, "list")?;
+            reject_extra_args(args, 1, "provider", "list")?;
             ProviderSubcommand::List
         }
         "verify" => parse_provider_verify(args)?,
         "disable" => {
-            reject_extra_args(args, 1, "disable")?;
+            reject_extra_args(args, 1, "provider", "disable")?;
             ProviderSubcommand::Disable
         }
         other => {
@@ -950,16 +950,16 @@ fn parse_document_command(args: &[String]) -> Result<DocumentArgs> {
             selector: parse_document_selector(args, "use")?,
         },
         "current" => {
-            reject_extra_args(args, 1, "current")?;
+            reject_extra_args(args, 1, "document", "current")?;
             DocumentSubcommand::Current
         }
         "list" => {
-            reject_extra_args(args, 1, "list")?;
+            reject_extra_args(args, 1, "document", "list")?;
             DocumentSubcommand::List
         }
         "verify" => parse_document_verify(args)?,
         "disable" => {
-            reject_extra_args(args, 1, "disable")?;
+            reject_extra_args(args, 1, "document", "disable")?;
             DocumentSubcommand::Disable
         }
         other => {
@@ -1076,14 +1076,28 @@ fn parse_provider_selector(args: &[String], command: &str) -> Result<String> {
     Ok(args[1].clone())
 }
 
-fn reject_extra_args(args: &[String], allowed_len: usize, command: &str) -> Result<()> {
+fn reject_extra_args(
+    args: &[String],
+    allowed_len: usize,
+    family: &str,
+    command: &str,
+) -> Result<()> {
     if args.len() > allowed_len {
+        let display_family = capitalize_first(family);
         return Err(RedactError::Usage(format!(
-            "Provider command '{}' does not accept extra arguments.\n  redacted provider {}",
-            command, command
+            "{} command '{}' does not accept extra arguments.\n  redacted {} {}",
+            display_family, command, family, command
         )));
     }
     Ok(())
+}
+
+fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 fn parse_except_selector(args: &[String], i: &mut usize) -> Result<ExceptRuleSelector> {
@@ -1323,6 +1337,15 @@ mod tests {
                 }),
             })
         );
+    }
+
+    #[test]
+    fn parse_document_current_rejects_extra_arguments_with_document_help() {
+        let error = parse_args_from(&args(&["document", "current", "--extra"])).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Document command 'current'"));
+        assert!(message.contains("redacted document current"));
+        assert!(!message.contains("redacted provider current"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::io_safe;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -123,6 +123,13 @@ struct BundleManifest {
     entry_rel: Option<String>,
     checkpoint_rel: String,
     runner_sha256: String,
+    runner_executable_sha256: Option<String>,
+}
+
+struct BundlePaths {
+    runner: PathBuf,
+    entry: Option<PathBuf>,
+    checkpoint: PathBuf,
 }
 
 #[derive(Debug)]
@@ -723,21 +730,19 @@ pub fn start_active_session() -> Result<ProviderSession> {
         ))
     })?;
     let bundle = bundle_root_for_entry(entry)?;
-    refresh_bundle_runner(entry, &bundle)?;
     ensure_ready_bundle(entry, &bundle)?;
 
     let manifest = load_bundle_manifest(&bundle_manifest_path(&bundle))?;
-    let runner = bundle.join(&manifest.runner_rel);
-    let checkpoint = bundle.join(&manifest.checkpoint_rel);
-    let mut command = Command::new(&runner);
-    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
-        command.arg(bundle.join(entry_rel));
+    let paths = validate_bundle_paths(entry, &bundle, &manifest)?;
+    let mut command = Command::new(&paths.runner);
+    if let Some(entry_path) = paths.entry.as_ref() {
+        command.arg(entry_path);
     }
     command
         .arg("--target")
         .arg(entry.target)
         .arg("--checkpoint")
-        .arg(&checkpoint)
+        .arg(&paths.checkpoint)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -850,7 +855,11 @@ pub fn detect_with_session(
                     session.entry.target, span.label
                 ))
             })?;
-        if span.end < span.start || span.end > text.len() {
+        if span.end < span.start
+            || span.end > text.len()
+            || !text.is_char_boundary(span.start)
+            || !text.is_char_boundary(span.end)
+        {
             return Err(RedactError::Detection(format!(
                 "Provider '{}' returned invalid span {}..{}.",
                 session.entry.target, span.start, span.end
@@ -1027,29 +1036,15 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
         )));
     }
     refresh_bundle_runner_with_manifest(entry, bundle_root, &mut manifest)?;
-    let runner_path = bundle_root.join(&manifest.runner_rel);
-    if !runner_path.is_file() {
+    let paths = validate_bundle_paths(entry, bundle_root, &manifest)?;
+    if !paths.runner.is_file() {
         return Err(RedactError::Config(format!(
             "Provider bundle '{}' is missing runner executable '{}'.",
             entry.target,
-            runner_path.display()
+            paths.runner.display()
         )));
     }
-    let integrity_path = runner_integrity_path(bundle_root, &manifest);
-    if !integrity_path.is_file() {
-        return Err(RedactError::Config(format!(
-            "Provider bundle '{}' is missing runner integrity target '{}'.",
-            entry.target,
-            integrity_path.display()
-        )));
-    }
-    let actual_runner_sha256 = sha256_hex_of_path(&integrity_path)?;
-    if actual_runner_sha256 != manifest.runner_sha256 {
-        return Err(RedactError::Config(format!(
-            "Provider runner '{}' failed integrity verification.",
-            integrity_path.display()
-        )));
-    }
+    verify_runner_integrity(entry, bundle_root, &mut manifest, &paths, true)?;
     if let Some(package) = entry.package.as_ref() {
         verify_artifact_at_path(package, &bundle_root.join(package.bundle_rel))?;
     }
@@ -1067,20 +1062,6 @@ fn verify_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Re
     Ok(())
 }
 
-fn refresh_bundle_runner(entry: &'static ProviderCatalogEntry, bundle_root: &Path) -> Result<()> {
-    if !bundle_root.exists() {
-        return Ok(());
-    }
-    let mut manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
-    if manifest.schema_version != PROVIDER_SCHEMA_VERSION
-        || !manifest_matches_entry(&manifest, entry)
-        || manifest.adapter != entry.adapter.manifest_name()
-    {
-        return Ok(());
-    }
-    refresh_bundle_runner_with_manifest(entry, bundle_root, &mut manifest)
-}
-
 fn refresh_bundle_runner_with_manifest(
     entry: &'static ProviderCatalogEntry,
     bundle_root: &Path,
@@ -1091,10 +1072,10 @@ fn refresh_bundle_runner_with_manifest(
     if manifest.runner_sha256 == expected_sha256 {
         return Ok(());
     }
-    if manifest.entry_rel.is_none() {
+    let Some(entry_rel) = manifest.entry_rel.as_ref() else {
         return Ok(());
-    }
-    let runner_path = runner_integrity_path(bundle_root, manifest);
+    };
+    let runner_path = bundle_child_path(bundle_root, entry_rel, "entry_rel")?;
     io_safe::atomic_write(&runner_path, script)?;
     manifest.runner_sha256 = expected_sha256;
     save_bundle_manifest(bundle_root, manifest)
@@ -1130,6 +1111,8 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
         .join(OPENAI_RUNNER_SCRIPT_NAME);
     write_openai_runner_script(&runner_path)?;
     let runner_sha256 = sha256_hex_of_bytes(OPENAI_RUNNER_SCRIPT.as_bytes());
+    let runner_executable_sha256 =
+        sha256_hex_of_path(&temp_bundle.join(default_venv_python_rel()))?;
     let manifest = BundleManifest {
         schema_version: PROVIDER_SCHEMA_VERSION,
         target: entry.target.to_string(),
@@ -1145,6 +1128,7 @@ fn install_openai_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Re
         ),
         checkpoint_rel: PROVIDER_MODEL_DIR.into(),
         runner_sha256,
+        runner_executable_sha256: Some(runner_executable_sha256),
     };
     save_bundle_manifest(temp_bundle, &manifest)?;
     save_verified_state(
@@ -1172,6 +1156,8 @@ fn install_mlx_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Resul
         .join(MLX_RUNNER_SCRIPT_NAME);
     write_mlx_runner_script(&runner_path)?;
     let runner_sha256 = sha256_hex_of_bytes(MLX_RUNNER_SCRIPT.as_bytes());
+    let runner_executable_sha256 =
+        sha256_hex_of_path(&temp_bundle.join(default_venv_python_rel()))?;
     let manifest = BundleManifest {
         schema_version: PROVIDER_SCHEMA_VERSION,
         target: entry.target.to_string(),
@@ -1187,6 +1173,7 @@ fn install_mlx_bundle(entry: &ProviderCatalogEntry, temp_bundle: &Path) -> Resul
         ),
         checkpoint_rel: PROVIDER_MODEL_DIR.into(),
         runner_sha256,
+        runner_executable_sha256: Some(runner_executable_sha256),
     };
     save_bundle_manifest(temp_bundle, &manifest)?;
     save_verified_state(
@@ -1244,7 +1231,7 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
             entry.target, entry.target
         )));
     }
-    let manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
+    let mut manifest = load_bundle_manifest(&bundle_manifest_path(bundle_root))?;
     if !manifest_matches_entry(&manifest, entry)
         || manifest.adapter != entry.adapter.manifest_name()
     {
@@ -1254,16 +1241,15 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
             entry.target
         )));
     }
-    let runner_path = bundle_root.join(&manifest.runner_rel);
-    if !runner_path.is_file() {
+    let paths = validate_bundle_paths(entry, bundle_root, &manifest)?;
+    if !paths.runner.is_file() {
         return Err(RedactError::Config(format!(
             "Provider bundle '{}' is missing runner executable '{}'.",
             entry.target,
-            runner_path.display()
+            paths.runner.display()
         )));
     }
-    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
-        let entry_path = bundle_root.join(entry_rel);
+    if let Some(entry_path) = paths.entry.as_ref() {
         if !entry_path.is_file() {
             return Err(RedactError::Config(format!(
                 "Provider bundle '{}' is missing runner entry '{}'.",
@@ -1272,23 +1258,138 @@ fn ensure_ready_bundle(entry: &'static ProviderCatalogEntry, bundle_root: &Path)
             )));
         }
     }
-    let checkpoint_path = bundle_root.join(&manifest.checkpoint_rel);
-    if !checkpoint_path.exists() {
+    if !paths.checkpoint.exists() {
         return Err(RedactError::Config(format!(
             "Provider bundle '{}' is missing checkpoint path '{}'.",
             entry.target,
-            checkpoint_path.display()
+            paths.checkpoint.display()
         )));
     }
+    verify_runner_integrity(entry, bundle_root, &mut manifest, &paths, false)?;
     Ok(())
 }
 
-fn runner_integrity_path(bundle_root: &Path, manifest: &BundleManifest) -> PathBuf {
-    if let Some(entry_rel) = manifest.entry_rel.as_ref() {
-        bundle_root.join(entry_rel)
-    } else {
-        bundle_root.join(&manifest.runner_rel)
+fn validate_bundle_paths(
+    entry: &'static ProviderCatalogEntry,
+    bundle_root: &Path,
+    manifest: &BundleManifest,
+) -> Result<BundlePaths> {
+    if adapter_uses_virtualenv(entry.adapter) {
+        let expected_runner = default_venv_python_rel();
+        if manifest.runner_rel != expected_runner {
+            return Err(RedactError::Config(format!(
+                "Provider bundle '{}' has unexpected runner path '{}'. Expected '{}'.",
+                entry.target, manifest.runner_rel, expected_runner
+            )));
+        }
+        let expected_entry = expected_entry_rel(entry.adapter);
+        match (manifest.entry_rel.as_deref(), expected_entry) {
+            (Some(actual), Some(expected)) if actual == expected => {}
+            (Some(actual), Some(expected)) => {
+                return Err(RedactError::Config(format!(
+                    "Provider bundle '{}' has unexpected runner entry '{}'. Expected '{}'.",
+                    entry.target, actual, expected
+                )));
+            }
+            _ => {
+                return Err(RedactError::Config(format!(
+                    "Provider bundle '{}' is missing runner entry metadata.",
+                    entry.target
+                )));
+            }
+        }
     }
+
+    let runner = bundle_child_path(bundle_root, &manifest.runner_rel, "runner_rel")?;
+    let entry_path = manifest
+        .entry_rel
+        .as_deref()
+        .map(|entry_rel| bundle_child_path(bundle_root, entry_rel, "entry_rel"))
+        .transpose()?;
+    let checkpoint = bundle_child_path(bundle_root, &manifest.checkpoint_rel, "checkpoint_rel")?;
+    Ok(BundlePaths {
+        runner,
+        entry: entry_path,
+        checkpoint,
+    })
+}
+
+fn expected_entry_rel(adapter: ProviderAdapterKind) -> Option<&'static str> {
+    match adapter {
+        ProviderAdapterKind::OpenAiOpfLocal => Some("runner/openai_privacy_runner.py"),
+        ProviderAdapterKind::OpenAiMlxLocal => Some("runner/mlx_privacy_runner.py"),
+    }
+}
+
+fn bundle_child_path(bundle_root: &Path, rel: &str, field: &str) -> Result<PathBuf> {
+    let rel_path = Path::new(rel);
+    if rel.is_empty() || rel_path.is_absolute() {
+        return Err(RedactError::Config(format!(
+            "Provider manifest field '{}' must be a relative path inside the bundle.",
+            field
+        )));
+    }
+    for component in rel_path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => {
+                return Err(RedactError::Config(format!(
+                    "Provider manifest field '{}' must stay inside the bundle.",
+                    field
+                )));
+            }
+        }
+    }
+    Ok(bundle_root.join(rel_path))
+}
+
+fn verify_runner_integrity(
+    entry: &'static ProviderCatalogEntry,
+    bundle_root: &Path,
+    manifest: &mut BundleManifest,
+    paths: &BundlePaths,
+    allow_manifest_repair: bool,
+) -> Result<()> {
+    if let Some(entry_path) = paths.entry.as_ref() {
+        verify_sha256(entry_path, &manifest.runner_sha256, "Provider runner entry")?;
+        let actual_runner_sha256 = sha256_hex_of_path(&paths.runner)?;
+        match manifest.runner_executable_sha256.as_ref() {
+            Some(expected) if expected == &actual_runner_sha256 => Ok(()),
+            Some(_) => Err(RedactError::Config(format!(
+                "Provider runner executable '{}' failed integrity verification.",
+                paths.runner.display()
+            ))),
+            None if allow_manifest_repair => {
+                manifest.runner_executable_sha256 = Some(actual_runner_sha256);
+                save_bundle_manifest(bundle_root, manifest)
+            }
+            None => Err(RedactError::Config(format!(
+                "Provider bundle '{}' is missing launched runner integrity metadata.\n  redacted provider verify {}",
+                entry.target, entry.target
+            ))),
+        }
+    } else {
+        verify_sha256(&paths.runner, &manifest.runner_sha256, "Provider runner")
+    }
+}
+
+fn verify_sha256(path: &Path, expected: &str, label: &str) -> Result<()> {
+    if !path.is_file() {
+        return Err(RedactError::Config(format!(
+            "{} integrity target '{}' is missing.",
+            label,
+            path.display()
+        )));
+    }
+    let actual = sha256_hex_of_path(path)?;
+    if actual != expected {
+        return Err(RedactError::Config(format!(
+            "{} '{}' failed integrity verification.",
+            label,
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn repair_bundle_runtime_paths(bundle_root: &Path) -> Result<()> {
@@ -1592,6 +1693,12 @@ fn save_bundle_manifest(bundle_root: &Path, manifest: &BundleManifest) -> Result
     }
     content.push_str(&format!("checkpoint_rel={}\n", manifest.checkpoint_rel));
     content.push_str(&format!("runner_sha256={}\n", manifest.runner_sha256));
+    if let Some(runner_executable_sha256) = manifest.runner_executable_sha256.as_ref() {
+        content.push_str(&format!(
+            "runner_executable_sha256={}\n",
+            runner_executable_sha256
+        ));
+    }
     io_safe::atomic_write(&path, &content)
 }
 
@@ -1617,6 +1724,7 @@ fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
         entry_rel: values.get("entry_rel").cloned(),
         checkpoint_rel: parse_required_value(&values, "checkpoint_rel", path)?,
         runner_sha256: parse_required_value(&values, "runner_sha256", path)?,
+        runner_executable_sha256: values.get("runner_executable_sha256").cloned(),
     })
 }
 
@@ -2591,11 +2699,16 @@ mod tests {
             entry_rel: Some("runner/openai_privacy_runner.py".into()),
             checkpoint_rel: "model".into(),
             runner_sha256: "abc123".into(),
+            runner_executable_sha256: Some("def456".into()),
         };
         save_bundle_manifest(&root, &manifest).unwrap();
         let loaded = load_bundle_manifest(&bundle_manifest_path(&root)).unwrap();
         assert_eq!(loaded.target, manifest.target);
         assert_eq!(loaded.runner_sha256, manifest.runner_sha256);
+        assert_eq!(
+            loaded.runner_executable_sha256,
+            manifest.runner_executable_sha256
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2637,6 +2750,7 @@ runner_sha256=abc123
             entry_rel: None,
             checkpoint_rel: "model".into(),
             runner_sha256: "abc".into(),
+            runner_executable_sha256: None,
         };
         save_bundle_manifest(&root, &manifest).unwrap();
         fs::create_dir_all(root.join("bin")).unwrap();
@@ -2649,6 +2763,58 @@ runner_sha256=abc123
         fs::create_dir_all(root.join("model")).unwrap();
         let result = ensure_ready_bundle(&OPENAI_PROVIDER_ENTRY, &root);
         assert!(result.is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundle_child_path_rejects_paths_outside_bundle() {
+        let root = temp_path("bundle_child_path");
+        assert!(bundle_child_path(&root, "../runner", "runner_rel").is_err());
+        assert!(bundle_child_path(&root, "/tmp/runner", "runner_rel").is_err());
+        assert!(bundle_child_path(&root, "runner/provider.py", "runner_rel").is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ready_bundle_rejects_redirected_virtualenv_runner() {
+        let root = temp_path("redirected_runner");
+        let entry_script = root.join("runner").join(OPENAI_RUNNER_SCRIPT_NAME);
+        let evil_runner = root.join("runner").join("evil");
+        fs::create_dir_all(root.join("runner")).unwrap();
+        fs::create_dir_all(root.join("model")).unwrap();
+        fs::write(&entry_script, OPENAI_RUNNER_SCRIPT).unwrap();
+        fs::write(&evil_runner, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&evil_runner, fs::Permissions::from_mode(0o755)).unwrap();
+        let manifest = BundleManifest {
+            schema_version: 1,
+            target: OPENAI_PRIVACY_TARGET.into(),
+            provider: "openai".into(),
+            model: "privacy-filter-v1".into(),
+            adapter: ProviderAdapterKind::OpenAiOpfLocal.manifest_name().into(),
+            runner_rel: "runner/evil".into(),
+            entry_rel: Some(format!("runner/{}", OPENAI_RUNNER_SCRIPT_NAME)),
+            checkpoint_rel: "model".into(),
+            runner_sha256: sha256_hex_of_bytes(OPENAI_RUNNER_SCRIPT.as_bytes()),
+            runner_executable_sha256: Some(sha256_hex_of_path(&evil_runner).unwrap()),
+        };
+        save_bundle_manifest(&root, &manifest).unwrap();
+        save_verified_state(
+            &root,
+            &VerifiedState {
+                schema_version: 1,
+                target: OPENAI_PRIVACY_TARGET.into(),
+                verified_unix_seconds: 1,
+            },
+        )
+        .unwrap();
+
+        let result = ensure_ready_bundle(&OPENAI_PROVIDER_ENTRY, &root);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected runner path"));
         let _ = fs::remove_dir_all(&root);
     }
 

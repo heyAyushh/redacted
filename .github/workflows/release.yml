@@ -21,6 +21,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build ${{ matrix.name }}
@@ -57,26 +61,47 @@ jobs:
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
 
+      - name: Validate release version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${VERSION}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must look like v0.1.0" >&2
+            exit 2
+          fi
+
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package Unix archive
         if: matrix.archive == 'tar'
         shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+          MATRIX_NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          asset="redacted-${{ inputs.version }}-${{ matrix.name }}.tar.gz"
-          tar -C "target/${{ matrix.target }}/release" -czf "dist/${asset}" "${{ matrix.binary }}"
+          asset="redacted-${VERSION}-${MATRIX_NAME}.tar.gz"
+          tar -C "target/${TARGET}/release" -czf "dist/${asset}" "${BINARY}"
           shasum -a 256 "dist/${asset}" > "dist/${asset}.sha256"
 
       - name: Package Windows archive
         if: matrix.archive == 'zip'
         shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+          MATRIX_NAME: ${{ matrix.name }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $asset = "redacted-${{ inputs.version }}-${{ matrix.name }}.zip"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary }}" -DestinationPath "dist/$asset" -Force
+          $asset = "redacted-$env:VERSION-$env:MATRIX_NAME.zip"
+          Compress-Archive -Path "target/$env:TARGET/release/$env:BINARY" -DestinationPath "dist/$asset" -Force
           $hash = (Get-FileHash "dist/$asset" -Algorithm SHA256).Hash.ToLower()
           "$hash  dist/$asset" | Out-File -Encoding ascii "dist/$asset.sha256"
 
@@ -103,6 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
+          REPOSITORY: ${{ github.repository }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
         shell: bash
@@ -114,7 +140,7 @@ jobs:
             exit 2
           fi
 
-          cat > RELEASE_NOTES.md <<'NOTES'
+          cat > RELEASE_NOTES.md <<NOTES
           ## Install
 
           Download the archive for your platform, unpack it, and run:
@@ -126,7 +152,7 @@ jobs:
           ## Local build
 
           ```bash
-          cargo install --git https://github.com/${{ github.repository }} --tag ${{ inputs.version }} --force
+          cargo install --git https://github.com/${REPOSITORY} --tag ${VERSION} --force
           ```
           NOTES
 

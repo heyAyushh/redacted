@@ -68,6 +68,8 @@ guarantee.
   is an experimental local MLX runtime for the converted OpenAI Privacy Filter model.
 - The MLX runtime downloads from a pinned Hugging Face revision and verifies
   each artifact by byte size and SHA-256 before activation.
+- Provider manifests are constrained to in-bundle relative paths, and both the
+  adapter entry script and launched runner executable are integrity-checked.
 - Generative runtimes are not exposed as privacy-filter providers unless they
   run a real detector with verified span output.
 - If a provider runtime crashes, hangs, or misclassifies text, that impacts the

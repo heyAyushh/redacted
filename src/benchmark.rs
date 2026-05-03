@@ -235,13 +235,25 @@ fn elapsed_statistics(iterations: &[IterationMetrics]) -> (u128, u128, f64) {
     (min_ms, max_ms, avg_ms)
 }
 
-fn truncate_message(message: &str, max_chars: usize) -> String {
-    if message.len() <= max_chars {
+fn truncate_message(message: &str, max_bytes: usize) -> String {
+    if message.len() <= max_bytes {
         return message.trim().to_string();
     }
-    let mut output = message[..max_chars].trim().to_string();
+    let truncation_point = previous_char_boundary(message, max_bytes);
+    let mut output = message[..truncation_point].trim().to_string();
     output.push_str("...");
     output
+}
+
+fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
+    if max_bytes >= value.len() {
+        return value.len();
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
 }
 
 fn json_escape(value: &str) -> String {
@@ -305,5 +317,12 @@ mod tests {
         assert_eq!(min_ms, 10);
         assert_eq!(max_ms, 20);
         assert_eq!(avg_ms, 15.0);
+    }
+
+    #[test]
+    fn truncate_message_keeps_utf8_boundaries() {
+        let message = format!("{}é", "a".repeat(399));
+        let truncated = truncate_message(&message, 400);
+        assert_eq!(truncated, format!("{}...", "a".repeat(399)));
     }
 }
