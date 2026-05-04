@@ -137,6 +137,35 @@ fn provider_env(name: &str) -> (PathBuf, PathBuf, Vec<(String, String)>) {
     (config_root, data_root, envs)
 }
 
+fn isolated_state_env(name: &str) -> (PathBuf, PathBuf, Vec<(String, String)>) {
+    provider_env(name)
+}
+
+#[cfg(unix)]
+fn add_fake_trufflehog_to_env(
+    envs: &mut Vec<(String, String)>,
+    root: &std::path::Path,
+    raw_secret: &str,
+) -> std::io::Result<()> {
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir)?;
+    let tool_path = bin_dir.join("trufflehog");
+    fs::write(
+        &tool_path,
+        format!(
+            "#!/usr/bin/env python3\nimport json\nimport sys\nsys.stdout.write(json.dumps({{\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
+            raw = raw_secret
+        ),
+    )?;
+    fs::set_permissions(&tool_path, fs::Permissions::from_mode(0o755))?;
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    envs.push((
+        "PATH".to_string(),
+        format!("{}:{}", bin_dir.to_string_lossy(), current_path),
+    ));
+    Ok(())
+}
+
 #[cfg(unix)]
 fn add_fake_pdftotext_to_env(
     envs: &mut Vec<(String, String)>,
@@ -376,6 +405,22 @@ fn provider_enable_help_flag() {
 }
 
 #[test]
+fn detector_help_flag() {
+    let (_, stderr, code) = run(&["detector", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted detector"));
+    assert!(stderr.contains("install <detector-or-target>"));
+}
+
+#[test]
+fn detector_default_help_flag() {
+    let (_, stderr, code) = run(&["detector", "default", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stderr.contains("redacted detector default"));
+    assert!(stderr.contains("on|off"));
+}
+
+#[test]
 fn document_help_flag() {
     let (_, stderr, code) = run(&["document", "--help"]);
     assert_eq!(code, 0);
@@ -539,6 +584,52 @@ fn document_use_alias_sets_exact_active_target() {
     let active_state =
         fs::read_to_string(config_root.join("active-document-adapter.state")).unwrap();
     assert!(active_state.contains("pdf-inspector/local-v1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn detector_install_use_default_and_disable_round_trip() {
+    let (config_root, _data_root, mut envs) = isolated_state_env("detector_round_trip");
+    add_fake_trufflehog_to_env(
+        &mut envs,
+        config_root.parent().unwrap(),
+        "hog_secret_round_trip",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: trufflehog/secrets-v1"));
+    assert!(stdout.contains("verified: yes"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("active: yes"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "default", "on"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("external detectors default: on"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "current"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("external detectors default: on"));
+    assert!(stdout.contains("trufflehog/secrets-v1"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "list"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("installed=yes"));
+    assert!(stdout.contains("active=yes"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "verify", "--all"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("Verified external detectors"));
+
+    let (stdout, stderr, code) = run_with_env(&["detector", "disable", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("active: disabled"));
+
+    let active_state = config_root.join("active-detectors.state");
+    assert!(!active_state.exists());
 }
 
 #[cfg(unix)]
@@ -707,6 +798,94 @@ fn document_adapter_redacts_pdf_with_fake_runner() {
     assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains("[REDACTED:EMAIL]"));
     assert!(stdout.contains("[REDACTED:PHONE]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_requires_input_when_forced() {
+    let (_config_root, _data_root, envs) = isolated_state_env("detector_requires_input");
+    let (_stdout, stderr, code) =
+        run_with_env(&["--text", "hog_secret_forced", "--detectors"], &envs);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Cannot use --detectors without --input"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_requires_active_before_directory_scan() {
+    let (config_root, _data_root, envs) = isolated_state_env("detector_no_active_directory");
+    let input_dir = config_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("sample.txt"), "hog_secret_missing_active").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--summary",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("No active external detectors configured"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_redacts_trufflehog_findings() {
+    let (config_root, _data_root, mut envs) = isolated_state_env("detector_scan_file");
+    let raw_secret = "hog_secret_file_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+
+    let input_path = config_root.join("sample.txt");
+    fs::write(
+        &input_path,
+        format!("before {} after user@example.com", raw_secret),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(
+        &["--detectors", "--input", input_path.to_str().unwrap()],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("before [REDACTED:TRUFFLEHOG_SECRET] after [REDACTED:EMAIL]"));
+    assert!(!stdout.contains(raw_secret));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_default_on_and_no_detectors_override() {
+    let (config_root, _data_root, mut envs) = isolated_state_env("detector_default_on");
+    let raw_secret = "hog_secret_default_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+
+    let input_path = config_root.join("sample.txt");
+    fs::write(&input_path, format!("keep {} visible", raw_secret)).unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "default", "on"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(&["--input", input_path.to_str().unwrap()], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:TRUFFLEHOG_SECRET]"));
+
+    let (stdout, stderr, code) = run_with_env(
+        &["--no-detectors", "--input", input_path.to_str().unwrap()],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains(raw_secret));
 }
 
 #[cfg(unix)]

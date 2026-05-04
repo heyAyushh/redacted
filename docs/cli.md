@@ -5,6 +5,7 @@
 ``` 
 redacted [OPTIONS]
 redacted provider <COMMAND> [OPTIONS]
+redacted detector <COMMAND> [OPTIONS]
 redacted document <COMMAND> [OPTIONS]
 redacted benchmark --input <PATH> [OPTIONS]
 echo "text" | redacted [OPTIONS]
@@ -12,6 +13,7 @@ echo "text" | redacted [OPTIONS]
 
 The binary is called `redacted`. Normal scans still use flags directly.
 `redacted provider ...` manages optional privacy-filter bundles.
+`redacted detector ...` manages optional external detector engines.
 `redacted document ...` manages optional document adapters.
 `redacted benchmark ...` runs repeatable local benchmark scans.
 
@@ -41,6 +43,8 @@ If none of the above are provided and stdin is a terminal (not piped), the tool 
 | `--report-json` | — | Write redacted content normally **and** emit a structured JSON report to stderr |
 | `--replacement` | `<STRING>` | Custom replacement string instead of the default `[REDACTED:<TYPE>]` marker |
 | `--privacy-filter` | — | Run the active privacy-filter provider as one extra optional detection pass |
+| `--detectors` | — | Run active external detector engines for this `--input` scan |
+| `--no-detectors` | — | Disable external detector engines for this scan, even when the detector default is on |
 | `--document-adapter` | — | Run the active document adapter for supported non-text files (`.pdf` in v1) |
 
 ### Default Replacement Format
@@ -174,6 +178,47 @@ Notes:
   `mlx-community/openai-privacy-filter-4bit` model conversion
 - `redacted --privacy-filter ...` never downloads anything during a scan
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output
+
+---
+
+## Detector Commands
+
+Use `redacted detector ...` to bind, verify, and activate optional external
+secret detector engines. Native detectors always run; `--detectors` adds active
+external engines for `--input` scans.
+
+Current built-in target:
+
+- `trufflehog/secrets-v1` backed by the local TruffleHog CLI
+
+| Command | Description |
+|---------|-------------|
+| `redacted detector install <detector-or-target>` | Bind to a local executable and verify its SHA-256 |
+| `redacted detector use <detector-or-target>` | Add an installed detector engine to the active set |
+| `redacted detector current` | Show active external detectors and default mode |
+| `redacted detector list` | Show aliases, exact targets, and local install state |
+| `redacted detector verify [<detector-or-target> \| --all]` | Re-check installed detector executables |
+| `redacted detector disable [<detector-or-target> \| --all]` | Remove detector engines from the active set |
+| `redacted detector default <on\|off>` | Persist whether active external detectors run by default for `--input` scans |
+
+Examples:
+
+```bash
+redacted detector install trufflehog
+redacted detector use trufflehog
+redacted --detectors --input repo/
+redacted detector default on
+redacted --input repo/
+redacted --no-detectors --input repo/
+```
+
+Notes:
+
+- `trufflehog` resolves to `trufflehog/secrets-v1`.
+- `install` does not download TruffleHog; install it separately and keep it in `PATH`.
+- Scans run `trufflehog filesystem <path> --json --no-verification --no-update --no-color`.
+- External detectors require `--input`; they do not run for `--text` or stdin.
+- TruffleHog is AGPL-3.0 and remains an external tool, not vendored into the MIT core.
 
 ---
 

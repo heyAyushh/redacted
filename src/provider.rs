@@ -2478,7 +2478,7 @@ impl<'a> JsonParser<'a> {
     }
 }
 
-fn sha256_hex_of_path(path: &Path) -> Result<String> {
+pub(crate) fn sha256_hex_of_path(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path).map_err(|error| {
         RedactError::Config(format!(
             "Cannot open '{}' for SHA-256: {}",
@@ -2504,7 +2504,7 @@ fn sha256_hex_of_path(path: &Path) -> Result<String> {
     Ok(hasher.finalize_hex())
 }
 
-fn sha256_hex_of_bytes(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex_of_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize_hex()

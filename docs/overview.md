@@ -31,6 +31,7 @@
 | TOML configuration | Persist settings and custom patterns in a config file |
 | Directory traversal | Recursively process entire directory trees, preserving structure in the output directory |
 | Optional privacy-filter providers | Add one explicit extra detection pass from a separately installed local provider adapter |
+| Optional external detectors | Add active external secret-scanner engines such as TruffleHog for `--input` scans |
 | Optional document adapters | Extract supported non-text files (PDF in v1) into text before scanning |
 | Benchmark mode | Repeat dry-run scans and report timing/summary metrics with `redacted benchmark` |
 
@@ -64,6 +65,13 @@ redacted provider enable mlx
 # Run the extra provider-backed pass
 redacted --privacy-filter --input logs/
 
+# Enable TruffleHog as an external detector engine
+redacted detector install trufflehog
+redacted detector use trufflehog
+
+# Run active external detectors
+redacted --detectors --input logs/
+
 # Enable the PDF document adapter
 redacted document enable pdf-inspector
 
@@ -78,7 +86,7 @@ redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adap
 
 1. **Parse input.** CLI arguments are parsed by a hand-rolled parser (no external CLI framework). A TOML config file is optionally merged.
 2. **Build detector registry.** All built-in detectors are instantiated. Allow/deny lists and custom patterns are applied to filter the set.
-3. **Detect.** Each detector scans the input text in a single linear pass. If `--document-adapter` is enabled for a supported non-text file, text extraction runs first. If `--privacy-filter` is enabled, the active local provider bundle runs one extra pass after the built-in detectors. Findings are collected, sorted by position, and overlapping matches are merged (higher-confidence match wins).
+3. **Detect.** Each detector scans the input text in a single linear pass. If `--document-adapter` is enabled for a supported non-text file, text extraction runs first. If `--privacy-filter` is enabled, the active local provider bundle runs one extra pass after the built-in detectors. If external detectors are enabled, active external engines run for `--input` files and map results back into native findings. Findings are collected, sorted by position, and overlapping matches are merged (higher-confidence match wins).
 4. **Redact.** Each finding's span is replaced with a marker like `[REDACTED:EMAIL]`, or a custom replacement string.
 5. **Report.** Depending on flags, the tool writes redacted text to stdout/file, prints a summary to stderr, and/or emits a structured JSON report.
 
@@ -86,8 +94,10 @@ redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adap
 
 - The default Rust-only detector path is the hardened core of the tool.
 - Provider mode is optional and off by default.
+- External-detector mode is optional and off by default unless explicitly persisted with `redacted detector default on`.
 - Document-adapter mode is optional and off by default.
 - Provider mode adds an adapter boundary around the selected OpenAI Privacy Filter bundle.
+- External-detector mode adds an adapter boundary around local secret-scanner executables such as TruffleHog.
 - Document-adapter mode adds an adapter boundary around extraction runtimes such as local `pdftotext`.
 - `redacted` still owns the final redaction output, reports, and file writes even when `--privacy-filter` is enabled.
 - `redacted` still owns the detector/policy/redaction/report pipeline when `--document-adapter` is enabled.

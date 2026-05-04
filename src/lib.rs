@@ -6,6 +6,7 @@ pub mod detector;
 pub mod document;
 pub mod errors;
 pub mod except;
+pub mod external_detector;
 pub mod io_safe;
 pub mod json;
 pub mod policy;

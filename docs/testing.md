@@ -84,6 +84,28 @@ cargo run -- --privacy-filter --text "Jane Doe uses jane@example.com"
 Provider setup may download large external artifacts. Normal scans with
 `--privacy-filter` must not download anything.
 
+### External Detector Smoke Tests
+
+The regular test suite uses a fake TruffleHog executable. It must not require a
+real TruffleHog install. Run these smoke tests when changing external detector
+catalog entries or install logic:
+
+```bash
+cargo run -- detector list
+cargo run -- detector current
+```
+
+With a local TruffleHog executable installed in `PATH`:
+
+```bash
+cargo run -- detector install trufflehog
+cargo run -- detector use trufflehog
+cargo run -- --detectors --input logs/
+```
+
+External detector scans must not download anything. The TruffleHog adapter runs
+with `--no-verification` and `--no-update` by default.
+
 ---
 
 ## Test Categories

@@ -56,6 +56,17 @@ guarantee.
 - Document adapter bundles are installed under a dedicated app-data directory,
   verified when installed, and selected explicitly before use.
 
+The optional external detector workflow is also separate from the default
+scan path:
+
+- `redacted detector install ...` binds to a local external detector executable
+  on purpose.
+- `redacted --detectors ...` never installs detector engines during a scan.
+- `redacted detector default on` is explicit and can be overridden per scan with
+  `--no-detectors`.
+- External detector metadata pins the executable path and SHA-256 at install
+  time, then re-checks it before use.
+
 ### Provider Trust Boundary
 
 The provider subsystem is intentionally **not** part of the hardened core
@@ -89,6 +100,23 @@ guarantee.
   `--document-adapter` flow, not the default scan path.
 - Even with document adapters enabled, `redacted` still owns detector logic,
   policy application, masking, reporting, and output writes.
+
+### External Detector Trust Boundary
+
+External detector engines are also **not** part of the hardened core guarantee.
+
+- The Rust-only default path remains the baseline hardened mode.
+- External detector mode is an explicit adapter boundary around local secret
+  scanner executables.
+- The first supported target, `trufflehog/secrets-v1`, runs the local
+  TruffleHog CLI with `--json`, `--no-verification`, `--no-update`, and
+  `--no-color`.
+- TruffleHog is AGPL-3.0 and remains an external executable; it is not vendored
+  into the MIT Rust core.
+- If an external detector crashes, hangs, or misclassifies text, that impacts
+  the optional external-detector pass, not the default core scan path.
+- Even with external detectors enabled, `redacted` still owns final redaction,
+  masking, reports, retain/except rules, and file writes.
 
 ### No Regex Engine
 

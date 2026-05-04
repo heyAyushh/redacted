@@ -34,6 +34,7 @@ pub struct Config {
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
     pub privacy_filter: bool,
+    pub external_detectors: Option<bool>,
     pub document_adapter: bool,
 }
 
@@ -66,6 +67,7 @@ impl Config {
             follow_symlinks: cli.follow_symlinks,
             threads: cli.threads,
             privacy_filter: cli.privacy_filter,
+            external_detectors: cli.external_detectors,
             document_adapter: cli.document_adapter,
         };
 

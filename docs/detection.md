@@ -4,6 +4,10 @@
 
 Every built-in detector is a purpose-built, linear-time scanner. There is no regex engine; each detector walks the input byte-by-byte with bounded scan windows, making ReDoS impossible.
 
+Optional external detector engines are separate from the built-in detector set.
+They run only for `--input` scans when enabled with `--detectors` or with
+`redacted detector default on`.
+
 ---
 
 ## Detector Summary
@@ -28,6 +32,12 @@ Every built-in detector is a purpose-built, linear-time scanner. There is no reg
 | `PATH` | pii | Filesystem paths (absolute, relative, `~`, Windows drive paths) | High / Medium |
 | `CREDIT_CARD` | pii | Credit card numbers (Luhn-validated) | High |
 | `SSN` | pii | US Social Security Numbers | High |
+
+Optional external detector output:
+
+| Detector Name | Category | What It Detects | Confidence |
+|---------------|----------|-----------------|------------|
+| `TRUFFLEHOG_SECRET` | secret | Secrets reported by the active TruffleHog external detector engine | High |
 
 ---
 

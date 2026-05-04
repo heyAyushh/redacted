@@ -67,6 +67,41 @@ pub struct ProviderArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalDetectorHelpTopic {
+    Root,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalDetectorDefaultMode {
+    On,
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExternalDetectorSubcommand {
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable { selector: Option<String>, all: bool },
+    Default { mode: ExternalDetectorDefaultMode },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalDetectorArgs {
+    pub help: Option<ExternalDetectorHelpTopic>,
+    pub command: Option<ExternalDetectorSubcommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentHelpTopic {
     Root,
     Enable,
@@ -110,6 +145,7 @@ pub struct BenchmarkArgs {
 pub struct CliArgs {
     pub except: Option<ExceptArgs>,
     pub provider: Option<ProviderArgs>,
+    pub external_detector: Option<ExternalDetectorArgs>,
     pub document: Option<DocumentArgs>,
     pub benchmark: Option<BenchmarkArgs>,
     pub text: Option<String>,
@@ -138,6 +174,7 @@ pub struct CliArgs {
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
     pub privacy_filter: bool,
+    pub external_detectors: Option<bool>,
     pub document_adapter: bool,
     pub show_help: bool,
     pub show_version: bool,
@@ -151,6 +188,7 @@ impl Default for CliArgs {
         Self {
             except: None,
             provider: None,
+            external_detector: None,
             document: None,
             benchmark: None,
             text: None,
@@ -179,6 +217,7 @@ impl Default for CliArgs {
             follow_symlinks: false,
             threads: None,
             privacy_filter: false,
+            external_detectors: None,
             document_adapter: false,
             show_help: false,
             show_version: false,
@@ -197,6 +236,7 @@ USAGE:
   redacted [OPTIONS]
   redacted except [--file <PATH>] <add|remove|list> [--detector <NAME> | --literal <VALUE>]
   redacted provider <enable|install|use|current|list|verify|disable> [OPTIONS]
+  redacted detector <install|use|current|list|verify|disable|default> [OPTIONS]
   redacted document <enable|install|use|current|list|verify|disable> [OPTIONS]
   redacted benchmark --input <PATH> [OPTIONS]
   echo "secret text" | redacted
@@ -205,6 +245,8 @@ USAGE:
   redacted --input logs/ --output cleaned/
   redacted provider enable openai
   redacted provider enable mlx
+  redacted detector install trufflehog
+  redacted detector use trufflehog
   redacted document enable pdf-inspector
   redacted benchmark --input logs/ --iterations 5 --privacy-filter
 
@@ -238,6 +280,12 @@ PRIVACY FILTER:
   --privacy-filter      Run the active privacy-filter provider as an extra detection pass
   redacted provider ... Manage install, activation, and verification for provider bundles
                         Provider mode is optional and outside the hardened core scan path
+
+EXTERNAL DETECTORS:
+  --detectors           Run active external detector engines for --input scans
+  --no-detectors        Disable external detector engines for this scan
+  redacted detector ... Manage external detector engines such as TruffleHog
+                        External detectors are optional and outside the hardened core scan path
 
 DOCUMENT ADAPTER:
   --document-adapter    Use the active document adapter for supported non-text inputs (PDF)
@@ -283,10 +331,14 @@ EXAMPLES:
   redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
   redacted --text "Alice was born on 1990-01-02" --privacy-filter
   redacted provider enable openai
+  redacted detector install trufflehog
+  redacted detector use trufflehog
+  redacted --detectors --input repo/
   redacted document enable pdf-inspector
   redacted --input report.pdf --document-adapter
   redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
   redacted provider list
+  redacted detector list
   redacted document list
   redacted except add --detector EMAIL
   redacted except list"#,
@@ -419,6 +471,117 @@ USAGE:
     eprintln!("{}", text);
 }
 
+pub fn print_external_detector_help(topic: ExternalDetectorHelpTopic) {
+    let text = match topic {
+        ExternalDetectorHelpTopic::Root => {
+            r#"redacted detector — manage optional external detector engines.
+
+USAGE:
+  redacted detector install <detector-or-target>
+  redacted detector use <detector-or-target>
+  redacted detector current
+  redacted detector list
+  redacted detector verify [<detector-or-target> | --all]
+  redacted detector disable [<detector-or-target> | --all]
+  redacted detector default <on|off>
+
+OVERVIEW:
+  Native detectors always run. External detectors are extra lower-trust engines
+  such as TruffleHog, selected explicitly and kept outside the Rust-only core.
+  The first built-in external detector target is:
+    trufflehog -> trufflehog/secrets-v1
+
+EXAMPLES:
+  redacted detector install trufflehog
+  redacted detector use trufflehog
+  redacted detector default on
+  redacted detector current
+  redacted detector list
+  redacted detector verify --all
+  redacted detector disable trufflehog
+
+NEXT STEP:
+  Once a detector is active, run scans with:
+    redacted --detectors --input repo/
+  Or persist the default with:
+    redacted detector default on"#
+        }
+        ExternalDetectorHelpTopic::Install => {
+            r#"redacted detector install — bind a local external detector executable.
+
+USAGE:
+  redacted detector install <detector-or-target>
+
+EXAMPLES:
+  redacted detector install trufflehog
+  redacted detector install trufflehog/secrets-v1
+
+BEHAVIOR:
+  `install` does not download TruffleHog. It verifies that the local
+  `trufflehog` executable exists, records its path, and pins its SHA-256."#
+        }
+        ExternalDetectorHelpTopic::Use => {
+            r#"redacted detector use — add an installed detector engine to the active set.
+
+USAGE:
+  redacted detector use <detector-or-target>
+
+EXAMPLES:
+  redacted detector use trufflehog
+  redacted detector use trufflehog/secrets-v1"#
+        }
+        ExternalDetectorHelpTopic::Current => {
+            r#"redacted detector current — show active external detector engines and default mode.
+
+USAGE:
+  redacted detector current"#
+        }
+        ExternalDetectorHelpTopic::List => {
+            r#"redacted detector list — show external detector aliases, targets, and install state.
+
+USAGE:
+  redacted detector list"#
+        }
+        ExternalDetectorHelpTopic::Verify => {
+            r#"redacted detector verify — re-check installed external detector metadata.
+
+USAGE:
+  redacted detector verify [<detector-or-target> | --all]
+
+EXAMPLES:
+  redacted detector verify
+  redacted detector verify trufflehog
+  redacted detector verify trufflehog/secrets-v1
+  redacted detector verify --all"#
+        }
+        ExternalDetectorHelpTopic::Disable => {
+            r#"redacted detector disable — remove external detector engines from the active set.
+
+USAGE:
+  redacted detector disable [<detector-or-target> | --all]
+
+EXAMPLES:
+  redacted detector disable trufflehog
+  redacted detector disable --all"#
+        }
+        ExternalDetectorHelpTopic::Default => {
+            r#"redacted detector default — control whether active external detectors run by default.
+
+USAGE:
+  redacted detector default <on|off>
+
+EXAMPLES:
+  redacted detector default on
+  redacted detector default off
+
+OVERRIDES:
+  --detectors forces external detectors on for a scan.
+  --no-detectors forces them off for a scan."#
+        }
+    };
+    eprintln!("{}", text);
+}
+
 pub fn print_version() {
     eprintln!("redacted {}", VERSION);
 }
@@ -541,6 +704,9 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     }
     if matches!(args.first().map(String::as_str), Some("provider")) {
         return parse_provider_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("detector")) {
+        return parse_external_detector_args(&args[1..]);
     }
     if matches!(args.first().map(String::as_str), Some("document")) {
         return parse_document_args(&args[1..]);
@@ -693,6 +859,8 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                 })?);
             }
             "--privacy-filter" => cli.privacy_filter = true,
+            "--detectors" => cli.external_detectors = Some(true),
+            "--no-detectors" => cli.external_detectors = Some(false),
             "--document-adapter" => cli.document_adapter = true,
             other => {
                 return Err(RedactError::Usage(format!(
@@ -767,6 +935,20 @@ fn parse_provider_args(args: &[String]) -> Result<CliArgs> {
         parse_provider_command(args)?
     };
     cli.provider = Some(provider);
+    Ok(cli)
+}
+
+fn parse_external_detector_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let detector = if args.is_empty() {
+        ExternalDetectorArgs {
+            help: Some(ExternalDetectorHelpTopic::Root),
+            command: None,
+        }
+    } else {
+        parse_external_detector_command(args)?
+    };
+    cli.external_detector = Some(detector);
     Ok(cli)
 }
 
@@ -872,6 +1054,149 @@ fn parse_document_command(args: &[String]) -> Result<DocumentArgs> {
         help: parsed.help.map(document_help_topic_from_managed),
         command: parsed.command.map(document_subcommand_from_managed),
     })
+}
+
+fn parse_external_detector_command(args: &[String]) -> Result<ExternalDetectorArgs> {
+    let first = args[0].as_str();
+    if first == "--help" || first == "-h" {
+        return Ok(ExternalDetectorArgs {
+            help: Some(ExternalDetectorHelpTopic::Root),
+            command: None,
+        });
+    }
+
+    let has_help_flag = args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h");
+    if has_help_flag {
+        return Ok(ExternalDetectorArgs {
+            help: Some(external_detector_topic_from_name(first)?),
+            command: None,
+        });
+    }
+
+    let command = match first {
+        "install" => ExternalDetectorSubcommand::Install {
+            selector: parse_external_detector_selector(args, "install")?,
+        },
+        "use" => ExternalDetectorSubcommand::Use {
+            selector: parse_external_detector_selector(args, "use")?,
+        },
+        "current" => {
+            reject_extra_args(args, 1, "detector", "current")?;
+            ExternalDetectorSubcommand::Current
+        }
+        "list" => {
+            reject_extra_args(args, 1, "detector", "list")?;
+            ExternalDetectorSubcommand::List
+        }
+        "verify" => parse_external_detector_verify(args)?,
+        "disable" => parse_external_detector_disable(args)?,
+        "default" => parse_external_detector_default(args)?,
+        other => {
+            return Err(RedactError::Usage(format!(
+                "Unknown detector command '{}'\n  redacted detector --help",
+                other
+            )));
+        }
+    };
+
+    Ok(ExternalDetectorArgs {
+        help: None,
+        command: Some(command),
+    })
+}
+
+fn external_detector_topic_from_name(name: &str) -> Result<ExternalDetectorHelpTopic> {
+    match name {
+        "install" => Ok(ExternalDetectorHelpTopic::Install),
+        "use" => Ok(ExternalDetectorHelpTopic::Use),
+        "current" => Ok(ExternalDetectorHelpTopic::Current),
+        "list" => Ok(ExternalDetectorHelpTopic::List),
+        "verify" => Ok(ExternalDetectorHelpTopic::Verify),
+        "disable" => Ok(ExternalDetectorHelpTopic::Disable),
+        "default" => Ok(ExternalDetectorHelpTopic::Default),
+        other => Err(RedactError::Usage(format!(
+            "Unknown detector command '{}'\n  redacted detector --help",
+            other
+        ))),
+    }
+}
+
+fn parse_external_detector_selector(args: &[String], command: &str) -> Result<String> {
+    if args.len() != 2 {
+        return Err(RedactError::Usage(format!(
+            "Detector command '{}' requires <detector-or-target>.\n  redacted detector {} trufflehog",
+            command, command
+        )));
+    }
+    Ok(args[1].clone())
+}
+
+fn parse_external_detector_verify(args: &[String]) -> Result<ExternalDetectorSubcommand> {
+    let mut selector: Option<String> = None;
+    let mut all = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => all = true,
+            value => {
+                if selector.is_some() || all {
+                    return Err(RedactError::Usage(
+                        "Detector verify accepts one selector or --all.\n  redacted detector verify trufflehog\n  redacted detector verify --all".into(),
+                    ));
+                }
+                selector = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    Ok(ExternalDetectorSubcommand::Verify { selector, all })
+}
+
+fn parse_external_detector_disable(args: &[String]) -> Result<ExternalDetectorSubcommand> {
+    let mut selector: Option<String> = None;
+    let mut all = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => all = true,
+            value => {
+                if selector.is_some() || all {
+                    return Err(RedactError::Usage(
+                        "Detector disable accepts one selector or --all.\n  redacted detector disable trufflehog\n  redacted detector disable --all".into(),
+                    ));
+                }
+                selector = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    Ok(ExternalDetectorSubcommand::Disable { selector, all })
+}
+
+fn parse_external_detector_default(args: &[String]) -> Result<ExternalDetectorSubcommand> {
+    if args.len() != 2 {
+        return Err(RedactError::Usage(
+            "Detector default requires on or off.\n  redacted detector default on\n  redacted detector default off".into(),
+        ));
+    }
+    let mode = match args[1].as_str() {
+        "on" => ExternalDetectorDefaultMode::On,
+        "off" => ExternalDetectorDefaultMode::Off,
+        other => {
+            return Err(RedactError::Usage(format!(
+                "Unknown detector default '{}'. Expected: on, off\n  redacted detector default on",
+                other
+            )));
+        }
+    };
+    Ok(ExternalDetectorSubcommand::Default { mode })
 }
 
 struct ManagedCommandSpec {
@@ -1299,6 +1624,85 @@ mod tests {
     fn parse_privacy_filter_flag() {
         let cli = parse_args_from(&args(&["--text", "hello", "--privacy-filter"])).unwrap();
         assert!(cli.privacy_filter);
+    }
+
+    #[test]
+    fn parse_external_detector_root_help() {
+        let cli = parse_args_from(&args(&["detector"])).unwrap();
+        assert_eq!(
+            cli.external_detector,
+            Some(ExternalDetectorArgs {
+                help: Some(ExternalDetectorHelpTopic::Root),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_external_detector_install_alias() {
+        let cli = parse_args_from(&args(&["detector", "install", "trufflehog"])).unwrap();
+        assert_eq!(
+            cli.external_detector,
+            Some(ExternalDetectorArgs {
+                help: None,
+                command: Some(ExternalDetectorSubcommand::Install {
+                    selector: "trufflehog".into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_external_detector_default_on() {
+        let cli = parse_args_from(&args(&["detector", "default", "on"])).unwrap();
+        assert_eq!(
+            cli.external_detector,
+            Some(ExternalDetectorArgs {
+                help: None,
+                command: Some(ExternalDetectorSubcommand::Default {
+                    mode: ExternalDetectorDefaultMode::On,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_external_detector_disable_selector() {
+        let cli = parse_args_from(&args(&["detector", "disable", "trufflehog"])).unwrap();
+        assert_eq!(
+            cli.external_detector,
+            Some(ExternalDetectorArgs {
+                help: None,
+                command: Some(ExternalDetectorSubcommand::Disable {
+                    selector: Some("trufflehog".into()),
+                    all: false,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_external_detector_verify_all() {
+        let cli = parse_args_from(&args(&["detector", "verify", "--all"])).unwrap();
+        assert_eq!(
+            cli.external_detector,
+            Some(ExternalDetectorArgs {
+                help: None,
+                command: Some(ExternalDetectorSubcommand::Verify {
+                    selector: None,
+                    all: true,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_external_detectors_scan_flags() {
+        let cli = parse_args_from(&args(&["--input", "repo", "--detectors"])).unwrap();
+        assert_eq!(cli.external_detectors, Some(true));
+
+        let cli = parse_args_from(&args(&["--input", "repo", "--no-detectors"])).unwrap();
+        assert_eq!(cli.external_detectors, Some(false));
     }
 
     #[test]
