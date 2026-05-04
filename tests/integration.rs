@@ -1146,6 +1146,8 @@ fn external_detector_directory_failure_keeps_native_detection() {
         &envs,
     );
     assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("Warning: external detector directory scan failed"));
+    assert!(stderr.contains("continuing with native detectors only"));
     assert!(stderr.contains("\"status\": \"processed\""));
     assert!(stderr.contains("\"detector\": \"EMAIL\""));
     assert!(stderr.contains("\"files_errored\": 0"));

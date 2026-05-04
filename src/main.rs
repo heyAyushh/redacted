@@ -619,6 +619,12 @@ fn process_directory(
         } else {
             (None, None)
         };
+    if let Some(error) = external_directory_error.as_ref() {
+        eprintln!(
+            "Warning: external detector directory scan failed; continuing with native detectors only. {}",
+            error
+        );
+    }
     let external_detector_session_for_files = if external_directory_error.is_some() {
         None
     } else {

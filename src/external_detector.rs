@@ -508,11 +508,18 @@ fn trufflehog_raw_secret(line: &str) -> Result<Option<String>> {
 }
 
 fn trufflehog_source_path(line: &str) -> Result<Option<PathBuf>> {
-    Ok(
-        json_string_field_in_object(line, TRUFFLEHOG_FILESYSTEM_KEY, TRUFFLEHOG_FILE_FIELD)?
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from),
-    )
+    let Some(source_metadata) = json_object_field(line, "SourceMetadata")? else {
+        return Ok(None);
+    };
+    let Some(data) = json_object_field(source_metadata, "Data")? else {
+        return Ok(None);
+    };
+    let Some(filesystem) = json_object_field(data, TRUFFLEHOG_FILESYSTEM_KEY)? else {
+        return Ok(None);
+    };
+    Ok(json_string_field(filesystem, TRUFFLEHOG_FILE_FIELD)?
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from))
 }
 
 fn normalize_reported_path(scan_root: &Path, reported: &Path) -> PathBuf {
@@ -550,26 +557,36 @@ fn find_secret_spans(
     findings
 }
 
-fn json_string_field_in_object(
-    line: &str,
-    object_key: &str,
-    field: &str,
-) -> Result<Option<String>> {
+fn json_object_field<'a>(line: &'a str, field: &str) -> Result<Option<&'a str>> {
     let bytes = line.as_bytes();
     let mut index = 0;
+    let mut depth = 0usize;
 
     while index < bytes.len() {
         match bytes[index] {
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    RedactError::Detection("External detector JSON has unbalanced nesting.".into())
+                })?;
+                index += 1;
+            }
             b'"' => {
                 let (key, next_index) = parse_json_string_with_end(line, index)?;
                 let mut value_index = next_index;
                 skip_json_ws(bytes, &mut value_index);
-                if key == object_key && bytes.get(value_index) == Some(&b':') {
+                if depth == JSON_TOP_LEVEL_OBJECT_DEPTH
+                    && key == field
+                    && bytes.get(value_index) == Some(&b':')
+                {
                     value_index += 1;
                     skip_json_ws(bytes, &mut value_index);
                     if bytes.get(value_index) == Some(&b'{') {
                         let end = json_container_end(line, value_index)?;
-                        return json_string_field(&line[value_index..end], field);
+                        return Ok(Some(&line[value_index..end]));
                     }
                 }
                 index = next_index;
@@ -1303,5 +1320,14 @@ mod tests {
     fn trufflehog_source_path_ignores_missing_filesystem_metadata() {
         let line = r#"{"SourceMetadata":{"Data":{"Git":{"file":"repo/a.txt"}}},"Raw":"secret"}"#;
         assert_eq!(trufflehog_source_path(line).unwrap(), None);
+    }
+
+    #[test]
+    fn trufflehog_source_path_uses_exact_filesystem_metadata_path() {
+        let line = r#"{"Other":{"Filesystem":{"file":"wrong.txt"}},"SourceMetadata":{"Data":{"Filesystem":{"file":"repo/a.txt"}}},"Raw":"secret"}"#;
+        assert_eq!(
+            trufflehog_source_path(line).unwrap(),
+            Some(PathBuf::from("repo/a.txt"))
+        );
     }
 }
