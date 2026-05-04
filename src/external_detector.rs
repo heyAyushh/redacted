@@ -10,7 +10,7 @@ use crate::extension::{
 };
 use crate::io_safe;
 use crate::{app_paths, app_paths::yes_or_no};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,8 @@ const TRUFFLEHOG_EXECUTABLE: &str = "trufflehog";
 const TRUFFLEHOG_DETECTOR_NAME: &str = "TRUFFLEHOG_SECRET";
 const TRUFFLEHOG_CATEGORY: &str = "secret";
 const TRUFFLEHOG_STDERR_LIMIT: usize = 2048;
+const TRUFFLEHOG_FILESYSTEM_KEY: &str = "Filesystem";
+const TRUFFLEHOG_FILE_FIELD: &str = "file";
 const UTF16_HIGH_SURROGATE_START: u32 = 0xD800;
 const UTF16_HIGH_SURROGATE_END: u32 = 0xDBFF;
 const UTF16_LOW_SURROGATE_START: u32 = 0xDC00;
@@ -44,6 +46,8 @@ struct ExternalDetectorCatalogEntry {
     aliases: &'static [&'static str],
     adapter: &'static str,
     executable_name: &'static str,
+    detector_name: &'static str,
+    category: &'static str,
     license: ExtensionLicenseMetadata,
 }
 
@@ -54,6 +58,8 @@ const TRUFFLEHOG_ENTRY: ExternalDetectorCatalogEntry = ExternalDetectorCatalogEn
     aliases: &[TRUFFLEHOG_ALIAS],
     adapter: TRUFFLEHOG_ADAPTER,
     executable_name: TRUFFLEHOG_EXECUTABLE,
+    detector_name: TRUFFLEHOG_DETECTOR_NAME,
+    category: TRUFFLEHOG_CATEGORY,
     license: ExtensionLicenseMetadata {
         target: TRUFFLEHOG_TARGET,
         kind: ExtensionKind::Detector,
@@ -86,6 +92,24 @@ struct ExternalDetectorRuntime {
 #[derive(Debug, Clone)]
 pub struct ExternalDetectorSession {
     runtimes: Vec<ExternalDetectorRuntime>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalDetectorDirectoryScan {
+    secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>>,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalDetectorSecret {
+    detector_name: &'static str,
+    category: &'static str,
+    raw: String,
+}
+
+#[derive(Debug, Clone)]
+struct TruffleHogSecret {
+    raw: String,
+    path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -228,10 +252,12 @@ pub fn scan_enabled(
     if override_value == Some(true) {
         return Ok(true);
     }
-    if !active_detectors_enabled(override_value)? || !detector_allowed(allow, deny) {
+    if !active_detectors_enabled(override_value)? {
         return Ok(false);
     }
-    Ok(!load_active_entries()?.is_empty())
+    Ok(load_active_entries()?
+        .iter()
+        .any(|entry| detector_allowed(entry, allow, deny)))
 }
 
 pub fn start_scan_session() -> Result<ExternalDetectorSession> {
@@ -259,12 +285,14 @@ pub fn detect_path_with_session(
     for runtime in &session.runtimes {
         match runtime.entry.adapter {
             TRUFFLEHOG_ADAPTER => {
-                findings.extend(run_trufflehog(
-                    runtime.entry,
-                    &runtime.manifest,
-                    path,
-                    text,
-                )?);
+                for secret in run_trufflehog(runtime.entry, &runtime.manifest, &[path])? {
+                    findings.extend(find_secret_spans(
+                        text,
+                        &secret.raw,
+                        runtime.entry.detector_name,
+                        runtime.entry.category,
+                    ));
+                }
             }
             other => {
                 return Err(RedactError::Detection(format!(
@@ -277,25 +305,92 @@ pub fn detect_path_with_session(
     Ok(findings)
 }
 
-fn detector_allowed(allow: &[String], deny: &[String]) -> bool {
-    let detector_name = TRUFFLEHOG_DETECTOR_NAME;
+pub fn detect_directory_with_session(
+    session: &ExternalDetectorSession,
+    scan_root: &Path,
+    paths: &[PathBuf],
+) -> Result<ExternalDetectorDirectoryScan> {
+    let mut secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>> = HashMap::new();
+    if paths.is_empty() {
+        return Ok(ExternalDetectorDirectoryScan { secrets_by_path });
+    }
+    for runtime in &session.runtimes {
+        match runtime.entry.adapter {
+            TRUFFLEHOG_ADAPTER => {
+                for secret in run_trufflehog(runtime.entry, &runtime.manifest, paths)? {
+                    if let Some(path) = secret.path {
+                        secrets_by_path
+                            .entry(normalize_reported_path(scan_root, &path))
+                            .or_default()
+                            .push(ExternalDetectorSecret {
+                                detector_name: runtime.entry.detector_name,
+                                category: runtime.entry.category,
+                                raw: secret.raw,
+                            });
+                    }
+                }
+            }
+            other => {
+                return Err(RedactError::Detection(format!(
+                    "External detector '{}' uses unsupported adapter '{}'.",
+                    runtime.entry.target, other
+                )));
+            }
+        }
+    }
+    Ok(ExternalDetectorDirectoryScan { secrets_by_path })
+}
+
+pub fn detect_path_from_directory_scan(
+    scan: &ExternalDetectorDirectoryScan,
+    path: &Path,
+    text: &str,
+) -> Vec<Finding> {
+    scan.secrets_by_path
+        .get(path)
+        .map(|secrets| {
+            secrets
+                .iter()
+                .flat_map(|secret| {
+                    find_secret_spans(text, &secret.raw, secret.detector_name, secret.category)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn detector_allowed(
+    entry: &ExternalDetectorCatalogEntry,
+    allow: &[String],
+    deny: &[String],
+) -> bool {
+    let detector_name = entry.detector_name;
     (allow.is_empty() || allow.iter().any(|name| name == detector_name))
         && !deny.iter().any(|name| name == detector_name)
 }
 
-pub fn findings_allowed(allow: &[String], deny: &[String]) -> bool {
-    detector_allowed(allow, deny)
+pub fn findings_allowed(
+    session: &ExternalDetectorSession,
+    allow: &[String],
+    deny: &[String],
+) -> bool {
+    session
+        .runtimes
+        .iter()
+        .any(|runtime| detector_allowed(runtime.entry, allow, deny))
 }
 
 fn run_trufflehog(
     entry: &ExternalDetectorCatalogEntry,
     manifest: &BundleManifest,
-    path: &Path,
-    text: &str,
-) -> Result<Vec<Finding>> {
-    let output = Command::new(&manifest.executable_path)
-        .arg("filesystem")
-        .arg(path)
+    paths: &[impl AsRef<Path>],
+) -> Result<Vec<TruffleHogSecret>> {
+    let mut command = Command::new(&manifest.executable_path);
+    command.arg("filesystem");
+    for path in paths {
+        command.arg(path.as_ref());
+    }
+    let output = command
         .arg("--json")
         .arg("--no-verification")
         .arg("--no-update")
@@ -325,17 +420,20 @@ fn run_trufflehog(
         ))
     })?;
 
-    let mut findings = Vec::new();
+    let mut secrets = Vec::new();
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(secret) = trufflehog_raw_secret(trimmed)? {
-            findings.extend(find_secret_spans(text, &secret));
+        if let Some(raw) = trufflehog_raw_secret(trimmed)? {
+            secrets.push(TruffleHogSecret {
+                raw,
+                path: trufflehog_source_path(trimmed)?,
+            });
         }
     }
-    Ok(findings)
+    Ok(secrets)
 }
 
 fn debug_stderr_suffix(stderr: &str) -> String {
@@ -378,7 +476,28 @@ fn trufflehog_raw_secret(line: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn find_secret_spans(text: &str, secret: &str) -> Vec<Finding> {
+fn trufflehog_source_path(line: &str) -> Result<Option<PathBuf>> {
+    Ok(
+        json_string_field_in_object(line, TRUFFLEHOG_FILESYSTEM_KEY, TRUFFLEHOG_FILE_FIELD)?
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+fn normalize_reported_path(scan_root: &Path, reported: &Path) -> PathBuf {
+    if reported.is_absolute() {
+        reported.to_path_buf()
+    } else {
+        scan_root.join(reported)
+    }
+}
+
+fn find_secret_spans(
+    text: &str,
+    secret: &str,
+    detector_name: &'static str,
+    category: &'static str,
+) -> Vec<Finding> {
     if secret.is_empty() {
         return Vec::new();
     }
@@ -388,8 +507,8 @@ fn find_secret_spans(text: &str, secret: &str) -> Vec<Finding> {
         let start = offset + relative_start;
         let end = start + secret.len();
         findings.push(Finding {
-            detector_name: TRUFFLEHOG_DETECTOR_NAME,
-            category: TRUFFLEHOG_CATEGORY,
+            detector_name,
+            category,
             start,
             end,
             confidence: Confidence::High,
@@ -398,6 +517,87 @@ fn find_secret_spans(text: &str, secret: &str) -> Vec<Finding> {
         offset = end;
     }
     findings
+}
+
+fn json_string_field_in_object(
+    line: &str,
+    object_key: &str,
+    field: &str,
+) -> Result<Option<String>> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let (key, next_index) = parse_json_string_with_end(line, index)?;
+                let mut value_index = next_index;
+                skip_json_ws(bytes, &mut value_index);
+                if key == object_key && bytes.get(value_index) == Some(&b':') {
+                    value_index += 1;
+                    skip_json_ws(bytes, &mut value_index);
+                    if bytes.get(value_index) == Some(&b'{') {
+                        let end = json_container_end(line, value_index)?;
+                        return json_string_field(&line[value_index..end], field);
+                    }
+                }
+                index = next_index;
+            }
+            byte if byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t') => {
+                return Err(RedactError::Detection(
+                    "External detector JSON has an unescaped control character.".into(),
+                ));
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn json_container_end(line: &str, start: usize) -> Result<usize> {
+    let bytes = line.as_bytes();
+    let open = *bytes.get(start).ok_or_else(|| {
+        RedactError::Detection("External detector JSON has missing container.".into())
+    })?;
+    match open {
+        b'{' | b'[' => {}
+        _ => {
+            return Err(RedactError::Detection(
+                "External detector JSON has invalid container.".into(),
+            ));
+        }
+    };
+    let mut depth = 0usize;
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let (_, next_index) = parse_json_string_with_end(line, index)?;
+                index = next_index;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    RedactError::Detection("External detector JSON has unbalanced nesting.".into())
+                })?;
+                index += 1;
+                if depth == 0 {
+                    return Ok(index);
+                }
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    Err(RedactError::Detection(
+        "External detector JSON has unterminated container.".into(),
+    ))
 }
 
 fn json_string_field(line: &str, field: &str) -> Result<Option<String>> {
@@ -1051,9 +1251,26 @@ mod tests {
     #[test]
     fn secret_spans_use_byte_offsets() {
         let text = "é token abc token abc";
-        let findings = find_secret_spans(text, "token");
+        let findings =
+            find_secret_spans(text, "token", TRUFFLEHOG_DETECTOR_NAME, TRUFFLEHOG_CATEGORY);
         assert_eq!(findings.len(), 2);
         assert_eq!((findings[0].start, findings[0].end), (3, 8));
         assert_eq!((findings[1].start, findings[1].end), (13, 18));
+    }
+
+    #[test]
+    fn trufflehog_source_path_reads_filesystem_metadata() {
+        let line =
+            r#"{"SourceMetadata":{"Data":{"Filesystem":{"file":"repo/a.txt"}}},"Raw":"secret"}"#;
+        assert_eq!(
+            trufflehog_source_path(line).unwrap(),
+            Some(PathBuf::from("repo/a.txt"))
+        );
+    }
+
+    #[test]
+    fn trufflehog_source_path_ignores_missing_filesystem_metadata() {
+        let line = r#"{"SourceMetadata":{"Data":{"Git":{"file":"repo/a.txt"}}},"Raw":"secret"}"#;
+        assert_eq!(trufflehog_source_path(line).unwrap(), None);
     }
 }
