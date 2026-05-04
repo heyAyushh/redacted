@@ -440,7 +440,7 @@ Rules:
 
 ---
 
-## 16. Release Checklist
+## 17. Release Checklist
 
 1. Update `version` in `Cargo.toml`.
 2. Run the full test suite: `cargo test --locked`.

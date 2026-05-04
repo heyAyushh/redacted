@@ -22,6 +22,7 @@ use config::Config;
 use detector::DetectorRegistry;
 use document::DocumentSession;
 use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
+use external_detector::ExternalDetectorSession;
 use policy::{FindingAction, FindingDecision};
 use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
@@ -111,13 +112,15 @@ fn run() -> errors::Result<i32> {
         } else {
             None
         };
-        if external_detector::scan_enabled(
+        let external_detector_session = if external_detector::scan_enabled(
             config.external_detectors,
             &config.allow_patterns,
             &config.deny_patterns,
         )? {
-            external_detector::ensure_scan_ready()?;
-        }
+            Some(external_detector::start_scan_session()?)
+        } else {
+            None
+        };
 
         if path.is_file() {
             return process_single_file(
@@ -126,6 +129,7 @@ fn run() -> errors::Result<i32> {
                 &registry,
                 provider_session.as_mut(),
                 document_session.as_mut(),
+                external_detector_session.as_ref(),
                 &except_rules,
             );
         } else if path.is_dir() {
@@ -135,6 +139,7 @@ fn run() -> errors::Result<i32> {
                 &registry,
                 provider_session.as_mut(),
                 document_session.as_mut(),
+                external_detector_session.as_ref(),
                 &except_rules,
             );
         } else {
@@ -207,12 +212,9 @@ fn collect_findings(
     config: &Config,
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
 ) -> errors::Result<Vec<detector::Finding>> {
-    let external_enabled = external_detector::scan_enabled(
-        config.external_detectors,
-        &config.allow_patterns,
-        &config.deny_patterns,
-    )?;
+    let external_enabled = external_detector_session.is_some();
     if provider_session.is_none() && !external_enabled {
         return Ok(registry.detect_all(text));
     }
@@ -228,12 +230,9 @@ fn collect_findings(
         findings.extend(provider_findings);
     }
     if external_enabled {
-        if let Some(path) = path {
-            findings.extend(external_detector::detect_path(
-                path,
-                text,
-                &config.allow_patterns,
-                &config.deny_patterns,
+        if let (Some(path), Some(session)) = (path, external_detector_session) {
+            findings.extend(external_detector::detect_path_with_session(
+                session, path, text,
             )?);
         }
     }
@@ -246,11 +245,19 @@ fn decide_findings(
     config: &Config,
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<Vec<FindingDecision>> {
     Ok(policy::decide_findings(
         text,
-        collect_findings(text, path, config, registry, provider_session)?,
+        collect_findings(
+            text,
+            path,
+            config,
+            registry,
+            provider_session,
+            external_detector_session,
+        )?,
         &config.retain_detectors,
         &config.retain_literals,
         &config.except_detectors,
@@ -290,7 +297,15 @@ fn process_text(
     _document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
-    let decisions = decide_findings(text, None, config, registry, provider_session, except_rules)?;
+    let decisions = decide_findings(
+        text,
+        None,
+        config,
+        registry,
+        provider_session,
+        None,
+        except_rules,
+    )?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -415,6 +430,7 @@ fn process_single_file(
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
     document_session: Option<&mut DocumentSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     if config.document_adapter && config.in_place && document::supports_path(path) {
@@ -455,6 +471,7 @@ fn process_single_file(
         config,
         registry,
         provider_session,
+        external_detector_session,
         except_rules,
     )?;
     let reportable = reportable_findings(&decisions);
@@ -527,6 +544,7 @@ fn process_directory(
     registry: &DetectorRegistry,
     mut provider_session: Option<&mut ProviderSession>,
     mut document_session: Option<&mut DocumentSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
@@ -608,6 +626,7 @@ fn process_directory(
                     config,
                     registry,
                     provider_session.as_deref_mut(),
+                    external_detector_session,
                     except_rules,
                 ) {
                     Ok(decisions) => decisions,

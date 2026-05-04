@@ -76,6 +76,17 @@ struct BundleManifest {
     executable_sha256: String,
 }
 
+#[derive(Debug, Clone)]
+struct ExternalDetectorRuntime {
+    entry: &'static ExternalDetectorCatalogEntry,
+    manifest: BundleManifest,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternalDetectorSession {
+    runtimes: Vec<ExternalDetectorRuntime>,
+}
+
 #[derive(Debug)]
 struct InstallOutcome {
     installed_now: bool,
@@ -216,49 +227,42 @@ pub fn scan_enabled(
     Ok(active_detectors_enabled(override_value)? && detector_allowed(allow, deny))
 }
 
-pub fn ensure_scan_ready() -> Result<()> {
+pub fn start_scan_session() -> Result<ExternalDetectorSession> {
     let entries = load_active_entries()?;
     if entries.is_empty() {
         return Err(RedactError::Usage(
             "No active external detectors configured.\n  redacted detector install trufflehog\n  redacted detector use trufflehog".into(),
         ));
     }
+    let mut runtimes = Vec::new();
     for entry in entries {
         let bundle = bundle_root_for_entry(entry)?;
-        ensure_ready_bundle(entry, &bundle)?;
+        let manifest = ensure_ready_bundle(entry, &bundle)?;
+        runtimes.push(ExternalDetectorRuntime { entry, manifest });
     }
-    Ok(())
+    Ok(ExternalDetectorSession { runtimes })
 }
 
-pub fn detect_path(
+pub fn detect_path_with_session(
+    session: &ExternalDetectorSession,
     path: &Path,
     text: &str,
-    allow: &[String],
-    deny: &[String],
 ) -> Result<Vec<Finding>> {
-    if !detector_allowed(allow, deny) {
-        return Ok(Vec::new());
-    }
-
-    let entries = load_active_entries()?;
-    if entries.is_empty() {
-        return Err(RedactError::Usage(
-            "No active external detectors configured.\n  redacted detector install trufflehog\n  redacted detector use trufflehog".into(),
-        ));
-    }
-
     let mut findings = Vec::new();
-    for entry in entries {
-        let bundle = bundle_root_for_entry(entry)?;
-        let manifest = read_ready_bundle_manifest(entry, &bundle)?;
-        match entry.adapter {
+    for runtime in &session.runtimes {
+        match runtime.entry.adapter {
             TRUFFLEHOG_ADAPTER => {
-                findings.extend(run_trufflehog(entry, &manifest, path, text)?);
+                findings.extend(run_trufflehog(
+                    runtime.entry,
+                    &runtime.manifest,
+                    path,
+                    text,
+                )?);
             }
             other => {
                 return Err(RedactError::Detection(format!(
                     "External detector '{}' uses unsupported adapter '{}'.",
-                    entry.target, other
+                    runtime.entry.target, other
                 )));
             }
         }
@@ -270,33 +274,6 @@ fn detector_allowed(allow: &[String], deny: &[String]) -> bool {
     let detector_name = TRUFFLEHOG_DETECTOR_NAME;
     (allow.is_empty() || allow.iter().any(|name| name == detector_name))
         && !deny.iter().any(|name| name == detector_name)
-}
-
-fn read_ready_bundle_manifest(
-    entry: &ExternalDetectorCatalogEntry,
-    bundle: &Path,
-) -> Result<BundleManifest> {
-    if !is_bundle_installed(entry, bundle)? {
-        return Err(RedactError::Usage(format!(
-            "External detector '{}' is not installed.\n  redacted detector install {}",
-            entry.target, entry.provider
-        )));
-    }
-    let manifest = read_bundle_manifest(&bundle.join(DETECTOR_BUNDLE_MANIFEST_FILE))?;
-    if manifest.target != entry.target || manifest.adapter != entry.adapter {
-        return Err(RedactError::Config(format!(
-            "External detector '{}' metadata does not match the catalog.",
-            entry.target
-        )));
-    }
-    if !bundle.join(VERIFIED_DETECTOR_STATE_FILE).exists() {
-        return Err(RedactError::Usage(format!(
-            "External detector '{}' has not been verified yet.\n  redacted detector verify {}",
-            entry.target, entry.provider
-        )));
-    }
-    ensure_manifest_executable_present(entry, &manifest)?;
-    Ok(manifest)
 }
 
 fn run_trufflehog(
