@@ -153,7 +153,7 @@ fn add_fake_trufflehog_to_env(
     fs::write(
         &tool_path,
         format!(
-            "#!/usr/bin/env python3\nimport json\nimport os\nimport pathlib\nimport sys\ninvoke_log = os.environ.get('FAKE_TRUFFLEHOG_INVOKE_LOG')\nif invoke_log:\n    with pathlib.Path(invoke_log).open('a') as handle:\n        handle.write('run\\n')\nmarker = os.environ.get('FAKE_TRUFFLEHOG_MUTATE_MARKER')\nif marker and not pathlib.Path(marker).exists():\n    pathlib.Path(marker).write_text('mutated')\n    pathlib.Path(sys.argv[0]).write_text(pathlib.Path(sys.argv[0]).read_text() + '\\n# mutated')\nargs = sys.argv[1:]\nscan_paths = []\nif 'filesystem' in args:\n    index = args.index('filesystem') + 1\n    while index < len(args) and not args[index].startswith('--'):\n        scan_paths.append(pathlib.Path(args[index]))\n        index += 1\nfiles = []\nfor scan_path in scan_paths:\n    if scan_path.is_dir():\n        files.extend(sorted(path for path in scan_path.rglob('*') if path.is_file()))\n    else:\n        files.append(scan_path)\nif not files:\n    files.append(pathlib.Path('unknown'))\nfor file_path in files:\n    sys.stdout.write(json.dumps({{\"SourceMetadata\":{{\"Data\":{{\"Filesystem\":{{\"file\":str(file_path)}}}}}},\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
+            "#!/usr/bin/env python3\nimport json\nimport os\nimport pathlib\nimport sys\ninvoke_log = os.environ.get('FAKE_TRUFFLEHOG_INVOKE_LOG')\nif invoke_log:\n    with pathlib.Path(invoke_log).open('a') as handle:\n        handle.write('run\\n')\nif os.environ.get('FAKE_TRUFFLEHOG_FAIL') == '1':\n    sys.stderr.write('fake trufflehog failure\\n')\n    sys.exit(2)\nmarker = os.environ.get('FAKE_TRUFFLEHOG_MUTATE_MARKER')\nif marker and not pathlib.Path(marker).exists():\n    pathlib.Path(marker).write_text('mutated')\n    pathlib.Path(sys.argv[0]).write_text(pathlib.Path(sys.argv[0]).read_text() + '\\n# mutated')\nargs = sys.argv[1:]\nscan_paths = []\nif 'filesystem' in args:\n    index = args.index('filesystem') + 1\n    while index < len(args) and not args[index].startswith('--'):\n        scan_paths.append(pathlib.Path(args[index]))\n        index += 1\nfiles = []\nfor scan_path in scan_paths:\n    if scan_path.is_dir():\n        files.extend(sorted(path for path in scan_path.rglob('*') if path.is_file()))\n    else:\n        files.append(scan_path)\nif not files:\n    files.append(pathlib.Path('unknown'))\nfor file_path in files:\n    sys.stdout.write(json.dumps({{\"SourceMetadata\":{{\"Data\":{{\"Filesystem\":{{\"file\":str(file_path)}}}}}},\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
             raw = raw_secret
         ),
     )?;
@@ -1117,6 +1117,38 @@ fn external_detector_directory_does_not_rehash_executable_per_file() {
     assert!(stderr.contains("\"files_processed\": 2"));
     let invocations = fs::read_to_string(invoke_log_path).unwrap();
     assert_eq!(invocations.lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_failure_keeps_native_detection() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_failure_native_fallback");
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), "unused_secret").unwrap();
+    envs.push(("FAKE_TRUFFLEHOG_FAIL".into(), "1".into()));
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), "email user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"status\": \"processed\""));
+    assert!(stderr.contains("\"detector\": \"EMAIL\""));
+    assert!(stderr.contains("\"files_errored\": 0"));
 }
 
 #[cfg(unix)]

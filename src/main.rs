@@ -619,6 +619,11 @@ fn process_directory(
         } else {
             (None, None)
         };
+    let external_detector_session_for_files = if external_directory_error.is_some() {
+        None
+    } else {
+        external_detector_session
+    };
 
     let mut results: Vec<FileResult> = Vec::new();
     let mut total_findings = 0;
@@ -660,15 +665,6 @@ fn process_directory(
                         }
                     };
                 let text = loaded.text;
-                if let Some(message) = external_directory_error.as_ref() {
-                    results.push(FileResult {
-                        path: relative.display().to_string(),
-                        findings_count: 0,
-                        findings: vec![],
-                        status: FileStatus::Error(message.clone()),
-                    });
-                    continue;
-                }
 
                 let decisions = match decide_findings(
                     &text,
@@ -677,7 +673,7 @@ fn process_directory(
                     registry,
                     ScanEngines {
                         provider_session: provider_session.as_deref_mut(),
-                        external_detector_session,
+                        external_detector_session: external_detector_session_for_files,
                         external_directory_scan: external_directory_scan.as_ref(),
                     },
                     except_rules,

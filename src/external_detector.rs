@@ -29,6 +29,7 @@ const TRUFFLEHOG_EXECUTABLE: &str = "trufflehog";
 const TRUFFLEHOG_DETECTOR_NAME: &str = "TRUFFLEHOG_SECRET";
 const TRUFFLEHOG_CATEGORY: &str = "secret";
 const TRUFFLEHOG_STDERR_LIMIT: usize = 2048;
+const TRUFFLEHOG_PATH_ARG_BUDGET_BYTES: usize = 64 * 1024;
 const TRUFFLEHOG_FILESYSTEM_KEY: &str = "Filesystem";
 const TRUFFLEHOG_FILE_FIELD: &str = "file";
 const UTF16_HIGH_SURROGATE_START: u32 = 0xD800;
@@ -317,16 +318,18 @@ pub fn detect_directory_with_session(
     for runtime in &session.runtimes {
         match runtime.entry.adapter {
             TRUFFLEHOG_ADAPTER => {
-                for secret in run_trufflehog(runtime.entry, &runtime.manifest, paths)? {
-                    if let Some(path) = secret.path {
-                        secrets_by_path
-                            .entry(normalize_reported_path(scan_root, &path))
-                            .or_default()
-                            .push(ExternalDetectorSecret {
-                                detector_name: runtime.entry.detector_name,
-                                category: runtime.entry.category,
-                                raw: secret.raw,
-                            });
+                for path_chunk in trufflehog_path_chunks(paths) {
+                    for secret in run_trufflehog(runtime.entry, &runtime.manifest, path_chunk)? {
+                        if let Some(path) = secret.path {
+                            secrets_by_path
+                                .entry(normalize_reported_path(scan_root, &path))
+                                .or_default()
+                                .push(ExternalDetectorSecret {
+                                    detector_name: runtime.entry.detector_name,
+                                    category: runtime.entry.category,
+                                    raw: secret.raw,
+                                });
+                        }
                     }
                 }
             }
@@ -434,6 +437,34 @@ fn run_trufflehog(
         }
     }
     Ok(secrets)
+}
+
+fn trufflehog_path_chunks(paths: &[PathBuf]) -> Vec<&[PathBuf]> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < paths.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+
+        while end < paths.len() {
+            let path_bytes = path_arg_bytes(&paths[end]);
+            if end > start && bytes.saturating_add(path_bytes) > TRUFFLEHOG_PATH_ARG_BUDGET_BYTES {
+                break;
+            }
+            bytes = bytes.saturating_add(path_bytes);
+            end += 1;
+        }
+
+        chunks.push(&paths[start..end]);
+        start = end;
+    }
+
+    chunks
+}
+
+fn path_arg_bytes(path: &Path) -> usize {
+    path.to_string_lossy().len().saturating_add(1)
 }
 
 fn debug_stderr_suffix(stderr: &str) -> String {
