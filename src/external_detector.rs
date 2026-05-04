@@ -98,7 +98,6 @@ pub struct ExternalDetectorSession {
 #[derive(Debug, Clone)]
 pub struct ExternalDetectorDirectoryScan {
     secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>>,
-    unscoped_secrets: Vec<ExternalDetectorSecret>,
 }
 
 #[derive(Debug, Clone)]
@@ -317,30 +316,42 @@ pub fn detect_directory_with_session(
     paths: &[PathBuf],
 ) -> Result<ExternalDetectorDirectoryScan> {
     let mut secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>> = HashMap::new();
-    let mut unscoped_secrets = Vec::new();
     if paths.is_empty() {
-        return Ok(ExternalDetectorDirectoryScan {
-            secrets_by_path,
-            unscoped_secrets,
-        });
+        return Ok(ExternalDetectorDirectoryScan { secrets_by_path });
     }
     for runtime in &session.runtimes {
         match runtime.entry.adapter {
             TRUFFLEHOG_ADAPTER => {
                 for path_chunk in trufflehog_path_chunks(paths) {
-                    for secret in run_trufflehog(runtime.entry, &runtime.manifest, path_chunk)? {
-                        let detector_secret = ExternalDetectorSecret {
-                            detector_name: runtime.entry.detector_name,
-                            category: runtime.entry.category,
-                            raw: secret.raw,
-                        };
-                        if let Some(path) = secret.path {
-                            secrets_by_path
-                                .entry(normalize_reported_path(scan_root, &path))
-                                .or_default()
-                                .push(detector_secret);
-                        } else {
-                            unscoped_secrets.push(detector_secret);
+                    let secrets = run_trufflehog(runtime.entry, &runtime.manifest, path_chunk)?;
+                    if path_chunk.len() > 1 && secrets.iter().any(|secret| secret.path.is_none()) {
+                        for path in path_chunk {
+                            for secret in run_trufflehog(
+                                runtime.entry,
+                                &runtime.manifest,
+                                std::slice::from_ref(path),
+                            )? {
+                                record_trufflehog_secret(
+                                    &mut secrets_by_path,
+                                    scan_root,
+                                    Some(path),
+                                    secret,
+                                    runtime.entry.detector_name,
+                                    runtime.entry.category,
+                                );
+                            }
+                        }
+                    } else {
+                        let fallback_path = path_chunk.first().map(PathBuf::as_path);
+                        for secret in secrets {
+                            record_trufflehog_secret(
+                                &mut secrets_by_path,
+                                scan_root,
+                                fallback_path,
+                                secret,
+                                runtime.entry.detector_name,
+                                runtime.entry.category,
+                            );
                         }
                     }
                 }
@@ -353,10 +364,28 @@ pub fn detect_directory_with_session(
             }
         }
     }
-    Ok(ExternalDetectorDirectoryScan {
-        secrets_by_path,
-        unscoped_secrets,
-    })
+    Ok(ExternalDetectorDirectoryScan { secrets_by_path })
+}
+
+fn record_trufflehog_secret(
+    secrets_by_path: &mut HashMap<PathBuf, Vec<ExternalDetectorSecret>>,
+    scan_root: &Path,
+    fallback_path: Option<&Path>,
+    secret: TruffleHogSecret,
+    detector_name: &'static str,
+    category: &'static str,
+) {
+    let Some(path) = secret.path.as_deref().or(fallback_path) else {
+        return;
+    };
+    secrets_by_path
+        .entry(normalize_reported_path(scan_root, path))
+        .or_default()
+        .push(ExternalDetectorSecret {
+            detector_name,
+            category,
+            raw: secret.raw,
+        });
 }
 
 pub fn detect_path_from_directory_scan(
@@ -364,9 +393,10 @@ pub fn detect_path_from_directory_scan(
     path: &Path,
     text: &str,
 ) -> Vec<Finding> {
-    let path_secrets = scan.secrets_by_path.get(path).into_iter().flatten();
-    path_secrets
-        .chain(scan.unscoped_secrets.iter())
+    scan.secrets_by_path
+        .get(path)
+        .into_iter()
+        .flatten()
         .flat_map(|secret| {
             find_secret_spans(text, &secret.raw, secret.detector_name, secret.category)
         })
@@ -703,7 +733,7 @@ fn json_string_field(line: &str, field: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn parse_json_string_value(line: &str, field: &str, index: usize) -> Result<Option<String>> {
+fn parse_json_string_value(line: &str, _field: &str, index: usize) -> Result<Option<String>> {
     let bytes = line.as_bytes();
     if bytes.get(index) == Some(&b'n')
         && bytes.get(index..index + 4).map(|value| value == b"null") == Some(true)
@@ -711,10 +741,7 @@ fn parse_json_string_value(line: &str, field: &str, index: usize) -> Result<Opti
         return Ok(None);
     }
     if bytes.get(index) != Some(&b'"') {
-        return Err(RedactError::Detection(format!(
-            "External detector JSON field '{}' is not a string.",
-            field
-        )));
+        return Ok(None);
     }
     parse_json_string(line, index).map(Some)
 }
@@ -1298,6 +1325,16 @@ mod tests {
             json_string_field(line, "Raw").unwrap(),
             Some("top-level".to_string())
         );
+    }
+
+    #[test]
+    fn json_string_field_skips_non_string_values() {
+        assert_eq!(json_string_field(r#"{"Raw":123}"#, "Raw").unwrap(), None);
+        assert_eq!(
+            json_string_field(r#"{"Raw":{"value":"secret"}}"#, "Raw").unwrap(),
+            None
+        );
+        assert_eq!(json_string_field(r#"{"Raw":false}"#, "Raw").unwrap(), None);
     }
 
     #[test]
