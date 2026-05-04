@@ -214,8 +214,9 @@ fn collect_findings(
     provider_session: Option<&mut ProviderSession>,
     external_detector_session: Option<&ExternalDetectorSession>,
 ) -> errors::Result<Vec<detector::Finding>> {
-    let external_enabled = external_detector_session.is_some();
-    if provider_session.is_none() && !external_enabled {
+    let external_findings_allowed = external_detector_session.is_some()
+        && external_detector::findings_allowed(&config.allow_patterns, &config.deny_patterns);
+    if provider_session.is_none() && !external_findings_allowed {
         return Ok(registry.detect_all(text));
     }
 
@@ -229,7 +230,7 @@ fn collect_findings(
         )?;
         findings.extend(provider_findings);
     }
-    if external_enabled {
+    if external_findings_allowed {
         if let (Some(path), Some(session)) = (path, external_detector_session) {
             findings.extend(external_detector::detect_path_with_session(
                 session, path, text,

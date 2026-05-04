@@ -225,11 +225,11 @@ pub fn scan_enabled(
     allow: &[String],
     deny: &[String],
 ) -> Result<bool> {
-    if !active_detectors_enabled(override_value)? || !detector_allowed(allow, deny) {
-        return Ok(false);
-    }
     if override_value == Some(true) {
         return Ok(true);
+    }
+    if !active_detectors_enabled(override_value)? || !detector_allowed(allow, deny) {
+        return Ok(false);
     }
     Ok(!load_active_entries()?.is_empty())
 }
@@ -281,6 +281,10 @@ fn detector_allowed(allow: &[String], deny: &[String]) -> bool {
     let detector_name = TRUFFLEHOG_DETECTOR_NAME;
     (allow.is_empty() || allow.iter().any(|name| name == detector_name))
         && !deny.iter().any(|name| name == detector_name)
+}
+
+pub fn findings_allowed(allow: &[String], deny: &[String]) -> bool {
+    detector_allowed(allow, deny)
 }
 
 fn run_trufflehog(

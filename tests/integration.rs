@@ -994,6 +994,63 @@ fn external_detector_default_on_respects_allow_pattern_before_readiness() {
 
 #[cfg(unix)]
 #[test]
+fn explicit_external_detector_fails_fast_even_when_filters_exclude_findings() {
+    let (config_root, _data_root, envs) =
+        isolated_state_env("detector_forced_allow_without_active");
+    let input_path = config_root.join("sample.txt");
+    fs::write(&input_path, "user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--allow-pattern",
+            "EMAIL",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert!(stderr.contains("No active external detectors configured"));
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_external_detector_still_respects_allow_pattern_for_findings() {
+    let (config_root, _data_root, mut envs) = isolated_state_env("detector_forced_allow_active");
+    let raw_secret = "hog_secret_allow_filter_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+
+    let input_path = config_root.join("sample.txt");
+    fs::write(
+        &input_path,
+        format!("email user@example.com secret {}", raw_secret),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--allow-pattern",
+            "EMAIL",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+    assert!(stdout.contains(raw_secret));
+    assert!(!stdout.contains("[REDACTED:TRUFFLEHOG_SECRET]"));
+}
+
+#[cfg(unix)]
+#[test]
 fn external_detector_default_on_without_active_detectors_is_noop() {
     let (config_root, _data_root, envs) = isolated_state_env("detector_default_no_active_noop");
     let input_path = config_root.join("sample.txt");
