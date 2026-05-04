@@ -34,6 +34,7 @@ const UTF16_HIGH_SURROGATE_END: u32 = 0xDBFF;
 const UTF16_LOW_SURROGATE_START: u32 = 0xDC00;
 const UTF16_LOW_SURROGATE_END: u32 = 0xDFFF;
 const UTF16_SUPPLEMENTARY_OFFSET: u32 = 0x10000;
+const JSON_TOP_LEVEL_OBJECT_DEPTH: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExternalDetectorCatalogEntry {
@@ -396,42 +397,70 @@ fn find_secret_spans(text: &str, secret: &str) -> Vec<Finding> {
 }
 
 fn json_string_field(line: &str, field: &str) -> Result<Option<String>> {
-    let needle = format!("\"{}\"", field);
     let bytes = line.as_bytes();
-    let mut search_start = 0;
-    while let Some(position) = line[search_start..].find(&needle) {
-        let key_start = search_start + position;
-        let mut index = key_start + needle.len();
-        skip_json_ws(bytes, &mut index);
-        if bytes.get(index) != Some(&b':') {
-            search_start = key_start + needle.len();
-            continue;
+    let mut index = 0;
+    let mut depth = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    RedactError::Detection("External detector JSON has unbalanced nesting.".into())
+                })?;
+                index += 1;
+            }
+            b'"' => {
+                let (key, next_index) = parse_json_string_with_end(line, index)?;
+                let mut value_index = next_index;
+                skip_json_ws(bytes, &mut value_index);
+                if depth == JSON_TOP_LEVEL_OBJECT_DEPTH
+                    && key == field
+                    && bytes.get(value_index) == Some(&b':')
+                {
+                    value_index += 1;
+                    skip_json_ws(bytes, &mut value_index);
+                    return parse_json_string_value(line, field, value_index);
+                }
+                index = next_index;
+            }
+            byte if byte < 0x20 && !matches!(byte, b'\n' | b'\r' | b'\t') => {
+                return Err(RedactError::Detection(
+                    "External detector JSON has an unescaped control character.".into(),
+                ));
+            }
+            _ => {
+                index += 1;
+            }
         }
-        index += 1;
-        skip_json_ws(bytes, &mut index);
-        if bytes.get(index) == Some(&b'n')
-            && bytes.get(index..index + 4).map(|value| value == b"null") == Some(true)
-        {
-            return Ok(None);
-        }
-        if bytes.get(index) != Some(&b'"') {
-            return Err(RedactError::Detection(format!(
-                "External detector JSON field '{}' is not a string.",
-                field
-            )));
-        }
-        return parse_json_string(line, index).map(Some);
     }
     Ok(None)
 }
 
-fn skip_json_ws(bytes: &[u8], index: &mut usize) {
-    while matches!(bytes.get(*index), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-        *index += 1;
+fn parse_json_string_value(line: &str, field: &str, index: usize) -> Result<Option<String>> {
+    let bytes = line.as_bytes();
+    if bytes.get(index) == Some(&b'n')
+        && bytes.get(index..index + 4).map(|value| value == b"null") == Some(true)
+    {
+        return Ok(None);
     }
+    if bytes.get(index) != Some(&b'"') {
+        return Err(RedactError::Detection(format!(
+            "External detector JSON field '{}' is not a string.",
+            field
+        )));
+    }
+    parse_json_string(line, index).map(Some)
 }
 
 fn parse_json_string(line: &str, quote_index: usize) -> Result<String> {
+    parse_json_string_with_end(line, quote_index).map(|(value, _)| value)
+}
+
+fn parse_json_string_with_end(line: &str, quote_index: usize) -> Result<(String, usize)> {
     let bytes = line.as_bytes();
     let mut index = quote_index + 1;
     let mut output = String::new();
@@ -441,7 +470,7 @@ fn parse_json_string(line: &str, quote_index: usize) -> Result<String> {
         match bytes[index] {
             b'"' => {
                 output.push_str(&line[segment_start..index]);
-                return Ok(output);
+                return Ok((output, index + 1));
             }
             b'\\' => {
                 output.push_str(&line[segment_start..index]);
@@ -519,6 +548,12 @@ fn parse_json_string(line: &str, quote_index: usize) -> Result<String> {
     Err(RedactError::Detection(
         "External detector JSON has an unterminated string.".into(),
     ))
+}
+
+fn skip_json_ws(bytes: &[u8], index: &mut usize) {
+    while matches!(bytes.get(*index), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+        *index += 1;
+    }
 }
 
 fn is_high_surrogate(value: u32) -> bool {
@@ -990,6 +1025,15 @@ mod tests {
         assert_eq!(
             json_string_field(line, "Raw").unwrap(),
             Some("token-😀".to_string())
+        );
+    }
+
+    #[test]
+    fn json_string_field_ignores_nested_keys() {
+        let line = r#"{"SourceMetadata":{"Data":{"Raw":"nested"}},"Raw":"top-level"}"#;
+        assert_eq!(
+            json_string_field(line, "Raw").unwrap(),
+            Some("top-level".to_string())
         );
     }
 
