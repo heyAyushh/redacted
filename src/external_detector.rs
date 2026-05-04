@@ -251,7 +251,11 @@ pub fn scan_enabled(
     deny: &[String],
 ) -> Result<bool> {
     if override_value == Some(true) {
-        return Ok(true);
+        let active = load_active_entries()?;
+        return Ok(active.is_empty()
+            || active
+                .iter()
+                .any(|entry| !deny.iter().any(|name| name == entry.detector_name)));
     }
     if !active_detectors_enabled(override_value)? {
         return Ok(false);

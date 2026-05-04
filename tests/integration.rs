@@ -1051,6 +1051,48 @@ fn explicit_external_detector_still_respects_allow_pattern_for_findings() {
 
 #[cfg(unix)]
 #[test]
+fn explicit_external_detector_respects_deny_pattern_before_readiness() {
+    let (config_root, _data_root, mut envs) = isolated_state_env("detector_forced_deny_active");
+    let raw_secret = "externalonlymarker";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+
+    let input_path = config_root.join("sample.txt");
+    fs::write(
+        &input_path,
+        format!("email user@example.com secret {}", raw_secret),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let tool_path = config_root
+        .parent()
+        .unwrap()
+        .join("fake-bin")
+        .join("trufflehog");
+    fs::write(&tool_path, "mutated after install").unwrap();
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_path.to_str().unwrap(),
+            "--deny-pattern",
+            "TRUFFLEHOG_SECRET",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+    assert!(stdout.contains(raw_secret));
+    assert!(!stderr.contains("integrity verification"));
+}
+
+#[cfg(unix)]
+#[test]
 fn external_detector_default_on_without_active_detectors_is_noop() {
     let (config_root, _data_root, envs) = isolated_state_env("detector_default_no_active_noop");
     let input_path = config_root.join("sample.txt");

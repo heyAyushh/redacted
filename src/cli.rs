@@ -1145,36 +1145,19 @@ fn parse_external_detector_selector(args: &[String], command: &str) -> Result<St
 }
 
 fn parse_external_detector_verify(args: &[String]) -> Result<ExternalDetectorSubcommand> {
-    let mut selector: Option<String> = None;
-    let mut all = false;
-    let mut index = 1;
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--all" => {
-                if selector.is_some() {
-                    return Err(RedactError::Usage(
-                        "Detector verify accepts one selector or --all.\n  redacted detector verify trufflehog\n  redacted detector verify --all".into(),
-                    ));
-                }
-                all = true;
-            }
-            value => {
-                if selector.is_some() || all {
-                    return Err(RedactError::Usage(
-                        "Detector verify accepts one selector or --all.\n  redacted detector verify trufflehog\n  redacted detector verify --all".into(),
-                    ));
-                }
-                selector = Some(value.to_string());
-            }
-        }
-        index += 1;
-    }
-
+    let (selector, all) = parse_external_detector_selector_or_all(args, "verify")?;
     Ok(ExternalDetectorSubcommand::Verify { selector, all })
 }
 
 fn parse_external_detector_disable(args: &[String]) -> Result<ExternalDetectorSubcommand> {
+    let (selector, all) = parse_external_detector_selector_or_all(args, "disable")?;
+    Ok(ExternalDetectorSubcommand::Disable { selector, all })
+}
+
+fn parse_external_detector_selector_or_all(
+    args: &[String],
+    command: &str,
+) -> Result<(Option<String>, bool)> {
     let mut selector: Option<String> = None;
     let mut all = false;
     let mut index = 1;
@@ -1183,17 +1166,13 @@ fn parse_external_detector_disable(args: &[String]) -> Result<ExternalDetectorSu
         match args[index].as_str() {
             "--all" => {
                 if selector.is_some() {
-                    return Err(RedactError::Usage(
-                        "Detector disable accepts one selector or --all.\n  redacted detector disable trufflehog\n  redacted detector disable --all".into(),
-                    ));
+                    return Err(external_detector_selector_or_all_error(command));
                 }
                 all = true;
             }
             value => {
                 if selector.is_some() || all {
-                    return Err(RedactError::Usage(
-                        "Detector disable accepts one selector or --all.\n  redacted detector disable trufflehog\n  redacted detector disable --all".into(),
-                    ));
+                    return Err(external_detector_selector_or_all_error(command));
                 }
                 selector = Some(value.to_string());
             }
@@ -1201,7 +1180,14 @@ fn parse_external_detector_disable(args: &[String]) -> Result<ExternalDetectorSu
         index += 1;
     }
 
-    Ok(ExternalDetectorSubcommand::Disable { selector, all })
+    Ok((selector, all))
+}
+
+fn external_detector_selector_or_all_error(command: &str) -> RedactError {
+    RedactError::Usage(format!(
+        "Detector {} accepts one selector or --all.\n  redacted detector {} trufflehog\n  redacted detector {} --all",
+        command, command, command
+    ))
 }
 
 fn parse_external_detector_default(args: &[String]) -> Result<ExternalDetectorSubcommand> {
