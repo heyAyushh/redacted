@@ -579,11 +579,19 @@ fn document_use_alias_sets_exact_active_target() {
 
     let (stdout, stderr, code) = run_with_env(&["document", "use", "pdf-inspector"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("notice: PDF document adapter calls the local Poppler pdftotext"));
     assert!(stdout.contains("resolved target: pdf-inspector/local-v1"));
 
     let active_state =
         fs::read_to_string(config_root.join("active-document-adapter.state")).unwrap();
     assert!(active_state.contains("pdf-inspector/local-v1"));
+
+    let (stdout, stderr, code) = run_with_env(&["document", "list"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("license=GPL-2.0-or-later"));
+    assert!(stdout.contains("distribution=external-binary"));
+    assert!(stdout.contains("bundled=no"));
+    assert!(stdout.contains("network_default=no"));
 }
 
 #[cfg(unix)]
@@ -599,11 +607,13 @@ fn detector_install_use_default_and_disable_round_trip() {
 
     let (stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("notice: TruffleHog is AGPL-3.0"));
     assert!(stdout.contains("resolved target: trufflehog/secrets-v1"));
     assert!(stdout.contains("verified: yes"));
 
     let (stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("notice: TruffleHog is AGPL-3.0"));
     assert!(stdout.contains("active: yes"));
 
     let (stdout, stderr, code) = run_with_env(&["detector", "default", "on"], &envs);
@@ -619,6 +629,10 @@ fn detector_install_use_default_and_disable_round_trip() {
     assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains("installed=yes"));
     assert!(stdout.contains("active=yes"));
+    assert!(stdout.contains("license=AGPL-3.0"));
+    assert!(stdout.contains("distribution=external-binary"));
+    assert!(stdout.contains("bundled=no"));
+    assert!(stdout.contains("network_default=no"));
 
     let (stdout, stderr, code) = run_with_env(&["detector", "verify", "--all"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
@@ -640,6 +654,7 @@ fn provider_enable_alias_reuses_verified_bundle() {
 
     let (stdout, stderr, code) = run_with_env(&["provider", "enable", "openai"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("notice: OpenAI Privacy Filter provider downloads Apache-2.0"));
     assert!(stdout.contains("resolved target: openai/privacy-filter-v1"));
     assert!(stdout.contains("verified: yes"));
 }
@@ -659,6 +674,9 @@ fn provider_list_shows_aliases_and_install_state() {
     assert!(stdout.contains("support=experimental"));
     assert!(stdout.contains("mode=token-span"));
     assert!(stdout.contains("mode=token-span-mlx"));
+    assert!(stdout.contains("license=Apache-2.0"));
+    assert!(stdout.contains("distribution=downloaded-artifact"));
+    assert!(stdout.contains("network_default=yes"));
     assert!(stdout.contains("installed=yes"));
     assert!(stdout.contains("active=yes"));
     assert!(stdout.contains("installed=no"));

@@ -439,7 +439,7 @@ USAGE:
   redacted provider current"#
         }
         ProviderHelpTopic::List => {
-            r#"redacted provider list — show aliases, exact targets, and local install state.
+            r#"redacted provider list — show aliases, exact targets, license metadata, and local install state.
 
 USAGE:
   redacted provider list"#
@@ -537,7 +537,7 @@ USAGE:
   redacted detector current"#
         }
         ExternalDetectorHelpTopic::List => {
-            r#"redacted detector list — show external detector aliases, targets, and install state.
+            r#"redacted detector list — show external detector aliases, targets, license metadata, and install state.
 
 USAGE:
   redacted detector list"#
@@ -649,7 +649,7 @@ USAGE:
   redacted document current"#
         }
         DocumentHelpTopic::List => {
-            r#"redacted document list — show aliases, exact targets, and local install state.
+            r#"redacted document list — show aliases, exact targets, license metadata, and local install state.
 
 USAGE:
   redacted document list"#

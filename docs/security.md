@@ -66,6 +66,8 @@ scan path:
   `--no-detectors`.
 - External detector metadata pins the executable path and SHA-256 at install
   time, then re-checks it before use.
+- Every optional extension declares license metadata. See
+  [`extension-licenses.md`](extension-licenses.md) for the policy and checklist.
 
 ### Provider Trust Boundary
 

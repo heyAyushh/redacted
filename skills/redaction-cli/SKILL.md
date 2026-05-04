@@ -329,6 +329,7 @@ Rules:
 - `use` switches only to an installed, verified target.
 - Aliases must resolve to pinned exact targets and print the resolved target.
 - `--privacy-filter` fails fast if no active provider is configured.
+- Provider catalog entries must declare extension license metadata.
 - Provider responses contain labels and byte spans only. They must not contain raw matched text or redacted text.
 - Core maps provider labels into canonical detector names and applies existing policy/report/redaction logic once after merging findings.
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output.
@@ -366,6 +367,7 @@ Rules:
 - In-place rewrite is blocked for document-adapter extracted files.
 - Adapter runner paths must be validated as bundle-relative child paths.
 - Adapter output is extracted text only; `redacted` still owns detection and redaction.
+- Document adapter catalog entries must declare extension license metadata.
 
 ## 15. Optional External Detector Architecture
 
@@ -401,6 +403,28 @@ Rules:
 - TruffleHog must run with `--json --no-verification --no-update --no-color`.
 - External detector errors must not include raw matched text.
 - Core maps external detector results into normal `Finding` values and still owns policy/report/redaction logic.
+- External detector catalog entries must declare extension license metadata.
+
+## 16. Extension License Checklist
+
+Core remains MIT. Optional extension entries must include:
+
+- target
+- kind: `provider`, `detector`, or `document`
+- source URL
+- license
+- distribution: `external-binary`, `downloaded-artifact`, `vendored-source`, or `linked-library`
+- bundled: `true` or `false`
+- network default: `true` or `false`
+- attribution/notice text
+
+Rules:
+
+- External binaries do not change the core license when they remain separate user-installed tools.
+- Downloaded artifacts need pinned URLs, byte sizes, SHA-256 hashes, and a notice before install/use.
+- Vendored source or linked libraries require explicit maintainer approval.
+- Unknown-license extensions must stay disabled by default.
+- Update `docs/extension-licenses.md`, README attribution, and tests whenever adding an extension.
 
 ---
 

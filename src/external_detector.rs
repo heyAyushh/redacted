@@ -4,6 +4,10 @@ use crate::cli::{
 };
 use crate::detector::{Confidence, Finding};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
+use crate::extension::{
+    format_registry_fields, write_notice_if_needed, ExtensionDistribution, ExtensionKind,
+    ExtensionLicenseMetadata,
+};
 use crate::io_safe;
 use crate::{app_paths, app_paths::yes_or_no};
 use std::collections::HashSet;
@@ -34,6 +38,7 @@ struct ExternalDetectorCatalogEntry {
     aliases: &'static [&'static str],
     adapter: &'static str,
     executable_name: &'static str,
+    license: ExtensionLicenseMetadata,
 }
 
 const TRUFFLEHOG_ENTRY: ExternalDetectorCatalogEntry = ExternalDetectorCatalogEntry {
@@ -43,6 +48,16 @@ const TRUFFLEHOG_ENTRY: ExternalDetectorCatalogEntry = ExternalDetectorCatalogEn
     aliases: &[TRUFFLEHOG_ALIAS],
     adapter: TRUFFLEHOG_ADAPTER,
     executable_name: TRUFFLEHOG_EXECUTABLE,
+    license: ExtensionLicenseMetadata {
+        target: TRUFFLEHOG_TARGET,
+        kind: ExtensionKind::Detector,
+        source_url: "https://github.com/trufflesecurity/trufflehog/tree/main",
+        license: "AGPL-3.0",
+        distribution: ExtensionDistribution::ExternalBinary,
+        bundled: false,
+        network_default: false,
+        notice: "TruffleHog is AGPL-3.0 and is used only as a local external binary; it is not vendored or linked into the MIT core.",
+    },
 };
 
 const EXTERNAL_DETECTOR_CATALOG: [ExternalDetectorCatalogEntry; 1] = [TRUFFLEHOG_ENTRY];
@@ -71,6 +86,7 @@ pub fn run_detector_command(args: &ExternalDetectorArgs) -> Result<i32> {
     match args.command.as_ref() {
         Some(ExternalDetectorSubcommand::Install { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let outcome = install_target(entry)?;
             io_safe::write_stdout(&format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
@@ -85,6 +101,7 @@ pub fn run_detector_command(args: &ExternalDetectorArgs) -> Result<i32> {
         }
         Some(ExternalDetectorSubcommand::Use { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let bundle = bundle_root_for_entry(entry)?;
             ensure_ready_bundle(entry, &bundle)?;
             add_active_target(entry.target)?;
@@ -706,13 +723,14 @@ fn format_detector_list() -> Result<String> {
         let verified = installed && bundle.join(VERIFIED_DETECTOR_STATE_FILE).exists();
         let active = active.iter().any(|target| target == entry.target);
         output.push_str(&format!(
-            "- {}  aliases={}  adapter={}  installed={}  verified={}  active={}\n",
+            "- {}  aliases={}  adapter={}  installed={}  verified={}  active={}  {}\n",
             entry.target,
             entry.aliases.join(","),
             entry.adapter,
             yes_or_no(installed),
             yes_or_no(verified),
-            yes_or_no(active)
+            yes_or_no(active),
+            format_registry_fields(entry.license)
         ));
     }
     Ok(output)

@@ -147,7 +147,7 @@ Current support levels:
 | `redacted provider install <provider-or-target>` | Download and verify a bundle without activating it |
 | `redacted provider use <provider-or-target>` | Switch the active provider to an installed, verified bundle |
 | `redacted provider current` | Show the active exact target |
-| `redacted provider list` | Show aliases, exact targets, and local install state |
+| `redacted provider list` | Show aliases, exact targets, license metadata, and local install state |
 | `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
 | `redacted provider disable` | Clear the active provider selection |
 
@@ -196,7 +196,7 @@ Current built-in target:
 | `redacted detector install <detector-or-target>` | Bind to a local executable and verify its SHA-256 |
 | `redacted detector use <detector-or-target>` | Add an installed detector engine to the active set |
 | `redacted detector current` | Show active external detectors and default mode |
-| `redacted detector list` | Show aliases, exact targets, and local install state |
+| `redacted detector list` | Show aliases, exact targets, license metadata, and local install state |
 | `redacted detector verify [<detector-or-target> \| --all]` | Re-check installed detector executables |
 | `redacted detector disable [<detector-or-target> \| --all]` | Remove detector engines from the active set |
 | `redacted detector default <on\|off>` | Persist whether active external detectors run by default for `--input` scans |
@@ -238,7 +238,7 @@ Current built-in target:
 | `redacted document install <adapter-or-target>` | Install and verify without activating |
 | `redacted document use <adapter-or-target>` | Switch the active adapter to an installed, verified target |
 | `redacted document current` | Show the active exact target |
-| `redacted document list` | Show aliases, exact targets, and local install state |
+| `redacted document list` | Show aliases, exact targets, license metadata, and local install state |
 | `redacted document verify [<adapter-or-target> \| --all]` | Re-verify installed adapter assets and runtime prerequisites |
 | `redacted document disable` | Clear the active adapter selection |
 

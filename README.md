@@ -633,21 +633,25 @@ See `docs/` for full documentation and `skills/redaction-cli/SKILL.md` for contr
 ## Attribution
 
 `redacted` itself is MIT licensed and the core CLI uses only the Rust standard
-library. Optional provider and document-adapter setup commands may install or
-call third-party tools only after you explicitly enable them.
+library. Optional providers, document adapters, and external detectors carry
+their own license metadata and remain separate from the MIT core.
 
-| Area | Used for | Upstream |
-|------|----------|----------|
-| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | Rust standard library |
-| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
-| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
-| Provider Python environments | Local model loading and span detection inside provider bundles | Hash-locked packages listed in `provider-locks/` |
-| External detector engine | Optional `trufflehog/secrets-v1` secret-scanner pass | Local [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) CLI, AGPL-3.0, not vendored |
-| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | Local `pdftotext` from Poppler |
+| Area | Used for | License | Distribution | Upstream |
+|------|----------|---------|--------------|----------|
+| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | MIT | bundled core | Rust standard library |
+| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | Apache-2.0 | downloaded artifact | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
+| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | Apache-2.0 | downloaded artifact | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
+| Provider Python environments | Local model loading and span detection inside provider bundles | package-specific | downloaded artifacts | Hash-locked packages listed in `provider-locks/` |
+| External detector engine | Optional `trufflehog/secrets-v1` secret-scanner pass | AGPL-3.0 | external binary | Local [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) CLI, not vendored |
+| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | GPL-2.0-or-later | external binary | Local `pdftotext` from [Poppler](https://poppler.freedesktop.org/) |
 
 Third-party models, tools, and Python packages keep their own upstream licenses.
 The checked-in lock files and provider catalog pin the exact downloaded artifacts
 with URLs, byte sizes, and SHA-256 hashes.
+
+The extension license policy and contribution checklist live in
+[docs/extension-licenses.md](docs/extension-licenses.md). Firecrawl
+`pdf-inspector` is intentionally not integrated until its license is clarified.
 
 ---
 

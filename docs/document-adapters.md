@@ -12,6 +12,9 @@ This document describes the optional document adapter subsystem behind
   Rust-only core scan path.
 - `redacted` still owns masking, reports, retain rules, except rules, and file
   writes.
+- Document adapter registry entries include source, license, distribution,
+  bundled, and network-default metadata. See
+  [`extension-licenses.md`](extension-licenses.md).
 
 ## Alias Resolution
 
@@ -51,6 +54,7 @@ Current v1 adapter target:
 
 - `pdf-inspector/local-v1`
 - Adapter runtime: local `pdftotext` command
+- Distribution: external binary, not vendored into the MIT core
 - Supported input extensions in v1: `.pdf`
 
 If `pdftotext` is unavailable, install fails fast with the next command to run.

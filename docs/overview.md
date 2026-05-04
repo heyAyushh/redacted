@@ -104,3 +104,5 @@ redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adap
 - The OpenAI OPF path is the supported token-span runtime.
 - The MLX path is experimental local inference for the converted OpenAI Privacy Filter model.
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output.
+- Optional extensions declare source, license, distribution, bundled, and
+  network-default metadata in their registries.

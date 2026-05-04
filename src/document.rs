@@ -1,5 +1,9 @@
 use crate::cli::{print_document_help, DocumentArgs, DocumentHelpTopic, DocumentSubcommand};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
+use crate::extension::{
+    format_registry_fields, write_notice_if_needed, ExtensionDistribution, ExtensionKind,
+    ExtensionLicenseMetadata,
+};
 use crate::io_safe;
 use crate::{app_paths, app_paths::yes_or_no};
 use std::fs;
@@ -67,6 +71,7 @@ struct DocumentCatalogEntry {
     aliases: &'static [&'static str],
     adapter: &'static str,
     runner_name: &'static str,
+    license: ExtensionLicenseMetadata,
 }
 
 const PDF_INSPECTOR_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
@@ -76,6 +81,16 @@ const PDF_INSPECTOR_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
     aliases: &[PDF_INSPECTOR_ALIAS],
     adapter: PDF_INSPECTOR_ADAPTER,
     runner_name: PDF_INSPECTOR_RUNNER_NAME,
+    license: ExtensionLicenseMetadata {
+        target: PDF_INSPECTOR_TARGET,
+        kind: ExtensionKind::Document,
+        source_url: "https://poppler.freedesktop.org/",
+        license: "GPL-2.0-or-later",
+        distribution: ExtensionDistribution::ExternalBinary,
+        bundled: false,
+        network_default: false,
+        notice: "PDF document adapter calls the local Poppler pdftotext executable, which is GPL licensed and remains outside the MIT core.",
+    },
 };
 
 const DOCUMENT_CATALOG: [DocumentCatalogEntry; 1] = [PDF_INSPECTOR_ENTRY];
@@ -121,6 +136,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
     match args.command.as_ref() {
         Some(DocumentSubcommand::Enable { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let bundle = bundle_root_for_entry(entry)?;
             let installed_now = if is_bundle_installed(entry, &bundle)? {
                 if !has_verified_state(&bundle)? {
@@ -142,6 +158,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
         }
         Some(DocumentSubcommand::Install { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let outcome = install_target(entry)?;
             let output = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
@@ -157,6 +174,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
         }
         Some(DocumentSubcommand::Use { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let bundle = bundle_root_for_entry(entry)?;
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
@@ -573,12 +591,13 @@ fn format_document_list() -> Result<String> {
             .map(|target| target == entry.target)
             .unwrap_or(false);
         output.push_str(&format!(
-            "- {}  adapter={}  support=supported  installed={}  verified={}  active={}\n",
+            "- {}  adapter={}  support=supported  installed={}  verified={}  active={}  {}\n",
             entry.target,
             entry.adapter,
             yes_or_no(installed),
             yes_or_no(verified),
             yes_or_no(active),
+            format_registry_fields(entry.license),
         ));
     }
     Ok(output)

@@ -106,6 +106,21 @@ cargo run -- --detectors --input logs/
 External detector scans must not download anything. The TruffleHog adapter runs
 with `--no-verification` and `--no-update` by default.
 
+### Extension License Checks
+
+When changing provider, detector, or document adapter catalogs, verify that list
+commands expose license metadata:
+
+```bash
+cargo run -- provider list
+cargo run -- detector list
+cargo run -- document list
+```
+
+Install/use flows for non-MIT or unknown-license extensions must print a notice.
+The full policy and contribution checklist are in
+[`extension-licenses.md`](extension-licenses.md).
+
 ---
 
 ## Test Categories

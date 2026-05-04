@@ -6,6 +6,7 @@ mod detector;
 mod document;
 mod errors;
 mod except;
+mod extension;
 mod external_detector;
 mod io_safe;
 mod json;

@@ -13,6 +13,8 @@ This document describes the optional provider subsystem behind
   scan path.
 - `redacted` still owns final masking, reports, retain rules, except rules, and
   file writes.
+- Provider registry entries include source, license, distribution, bundled, and
+  network-default metadata. See [`extension-licenses.md`](extension-licenses.md).
 
 ## Alias Resolution
 
