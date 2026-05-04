@@ -6,7 +6,6 @@ use crate::extension::{
 };
 use crate::io_safe;
 use crate::{app_paths, app_paths::yes_or_no};
-use std::env;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -755,26 +754,7 @@ fn verify_manifest_executable(
 }
 
 fn find_executable_in_path(name: &str) -> Result<PathBuf> {
-    let path_value = env::var_os("PATH").ok_or_else(|| {
-        RedactError::Usage(format!(
-            "Cannot find '{}' because PATH is not set.\nInstall Firecrawl PDF Inspector's pdf2md CLI, then run:\n  redacted document install firecrawl-pdf",
-            name
-        ))
-    })?;
-    for directory in env::split_paths(&path_value) {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        #[cfg(windows)]
-        {
-            let candidate = directory.join(format!("{}.exe", name));
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(RedactError::Usage(format!(
+    app_paths::find_executable_in_path(name).ok_or_else(|| RedactError::Usage(format!(
         "Cannot find '{}' in PATH.\nInstall Firecrawl PDF Inspector's pdf2md CLI, then run:\n  redacted document install firecrawl-pdf",
         name
     )))

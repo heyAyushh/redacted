@@ -38,6 +38,24 @@ pub fn data_root() -> Result<PathBuf> {
     Ok(home_dir()?.join(".local").join("share").join("redacted"))
 }
 
+pub fn find_executable_in_path(name: &str) -> Option<PathBuf> {
+    let path_value = std::env::var_os("PATH")?;
+    for directory in std::env::split_paths(&path_value) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate = directory.join(format!("{}.exe", name));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 fn home_dir() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("HOME") {
         return Ok(PathBuf::from(path));

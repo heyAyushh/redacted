@@ -706,26 +706,7 @@ fn ensure_manifest_executable_present(
 }
 
 fn find_executable_in_path(name: &str) -> Result<PathBuf> {
-    let path_value = env::var_os("PATH").ok_or_else(|| {
-        RedactError::Usage(format!(
-            "Cannot find '{}' because PATH is not set.\nInstall TruffleHog, then run:\n  redacted detector install trufflehog",
-            name
-        ))
-    })?;
-    for directory in env::split_paths(&path_value) {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-        #[cfg(windows)]
-        {
-            let candidate = directory.join(format!("{}.exe", name));
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(RedactError::Usage(format!(
+    app_paths::find_executable_in_path(name).ok_or_else(|| RedactError::Usage(format!(
         "Cannot find '{}' in PATH.\nInstall TruffleHog first, then run:\n  redacted detector install trufflehog",
         name
     )))
