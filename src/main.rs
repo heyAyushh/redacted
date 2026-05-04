@@ -111,7 +111,11 @@ fn run() -> errors::Result<i32> {
         } else {
             None
         };
-        if external_detector::active_detectors_enabled(config.external_detectors)? {
+        if external_detector::scan_enabled(
+            config.external_detectors,
+            &config.allow_patterns,
+            &config.deny_patterns,
+        )? {
             external_detector::ensure_scan_ready()?;
         }
 
@@ -204,7 +208,11 @@ fn collect_findings(
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
 ) -> errors::Result<Vec<detector::Finding>> {
-    let external_enabled = external_detector::active_detectors_enabled(config.external_detectors)?;
+    let external_enabled = external_detector::scan_enabled(
+        config.external_detectors,
+        &config.allow_patterns,
+        &config.deny_patterns,
+    )?;
     if provider_session.is_none() && !external_enabled {
         return Ok(registry.detect_all(text));
     }

@@ -29,6 +29,11 @@ const TRUFFLEHOG_EXECUTABLE: &str = "trufflehog";
 const TRUFFLEHOG_DETECTOR_NAME: &str = "TRUFFLEHOG_SECRET";
 const TRUFFLEHOG_CATEGORY: &str = "secret";
 const TRUFFLEHOG_STDERR_LIMIT: usize = 2048;
+const UTF16_HIGH_SURROGATE_START: u32 = 0xD800;
+const UTF16_HIGH_SURROGATE_END: u32 = 0xDBFF;
+const UTF16_LOW_SURROGATE_START: u32 = 0xDC00;
+const UTF16_LOW_SURROGATE_END: u32 = 0xDFFF;
+const UTF16_SUPPLEMENTARY_OFFSET: u32 = 0x10000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExternalDetectorCatalogEntry {
@@ -203,6 +208,14 @@ pub fn active_detectors_enabled(override_value: Option<bool>) -> Result<bool> {
     }
 }
 
+pub fn scan_enabled(
+    override_value: Option<bool>,
+    allow: &[String],
+    deny: &[String],
+) -> Result<bool> {
+    Ok(active_detectors_enabled(override_value)? && detector_allowed(allow, deny))
+}
+
 pub fn ensure_scan_ready() -> Result<()> {
     let entries = load_active_entries()?;
     if entries.is_empty() {
@@ -237,7 +250,7 @@ pub fn detect_path(
     let mut findings = Vec::new();
     for entry in entries {
         let bundle = bundle_root_for_entry(entry)?;
-        let manifest = ensure_ready_bundle(entry, &bundle)?;
+        let manifest = read_ready_bundle_manifest(entry, &bundle)?;
         match entry.adapter {
             TRUFFLEHOG_ADAPTER => {
                 findings.extend(run_trufflehog(entry, &manifest, path, text)?);
@@ -257,6 +270,33 @@ fn detector_allowed(allow: &[String], deny: &[String]) -> bool {
     let detector_name = TRUFFLEHOG_DETECTOR_NAME;
     (allow.is_empty() || allow.iter().any(|name| name == detector_name))
         && !deny.iter().any(|name| name == detector_name)
+}
+
+fn read_ready_bundle_manifest(
+    entry: &ExternalDetectorCatalogEntry,
+    bundle: &Path,
+) -> Result<BundleManifest> {
+    if !is_bundle_installed(entry, bundle)? {
+        return Err(RedactError::Usage(format!(
+            "External detector '{}' is not installed.\n  redacted detector install {}",
+            entry.target, entry.provider
+        )));
+    }
+    let manifest = read_bundle_manifest(&bundle.join(DETECTOR_BUNDLE_MANIFEST_FILE))?;
+    if manifest.target != entry.target || manifest.adapter != entry.adapter {
+        return Err(RedactError::Config(format!(
+            "External detector '{}' metadata does not match the catalog.",
+            entry.target
+        )));
+    }
+    if !bundle.join(VERIFIED_DETECTOR_STATE_FILE).exists() {
+        return Err(RedactError::Usage(format!(
+            "External detector '{}' has not been verified yet.\n  redacted detector verify {}",
+            entry.target, entry.provider
+        )));
+    }
+    ensure_manifest_executable_present(entry, &manifest)?;
+    Ok(manifest)
 }
 
 fn run_trufflehog(
@@ -437,12 +477,41 @@ fn parse_json_string(line: &str, quote_index: usize) -> Result<String> {
                     b't' => output.push('\t'),
                     b'u' => {
                         let value = parse_json_hex4(bytes, index + 1)?;
-                        output.push(char::from_u32(value).ok_or_else(|| {
+                        let scalar = if is_high_surrogate(value) {
+                            let low_escape_index = index + 5;
+                            if bytes.get(low_escape_index) != Some(&b'\\')
+                                || bytes.get(low_escape_index + 1) != Some(&b'u')
+                            {
+                                return Err(RedactError::Detection(
+                                    "External detector JSON has invalid unicode surrogate pair."
+                                        .into(),
+                                ));
+                            }
+                            let low = parse_json_hex4(bytes, low_escape_index + 2)?;
+                            if !is_low_surrogate(low) {
+                                return Err(RedactError::Detection(
+                                    "External detector JSON has invalid unicode surrogate pair."
+                                        .into(),
+                                ));
+                            }
+                            index += 10;
+                            UTF16_SUPPLEMENTARY_OFFSET
+                                + (((value - UTF16_HIGH_SURROGATE_START) << 10)
+                                    | (low - UTF16_LOW_SURROGATE_START))
+                        } else if is_low_surrogate(value) {
+                            return Err(RedactError::Detection(
+                                "External detector JSON has unexpected low unicode surrogate."
+                                    .into(),
+                            ));
+                        } else {
+                            index += 4;
+                            value
+                        };
+                        output.push(char::from_u32(scalar).ok_or_else(|| {
                             RedactError::Detection(
                                 "External detector JSON has invalid unicode escape.".into(),
                             )
                         })?);
-                        index += 4;
                     }
                     _ => {
                         return Err(RedactError::Detection(
@@ -467,6 +536,14 @@ fn parse_json_string(line: &str, quote_index: usize) -> Result<String> {
     Err(RedactError::Detection(
         "External detector JSON has an unterminated string.".into(),
     ))
+}
+
+fn is_high_surrogate(value: u32) -> bool {
+    (UTF16_HIGH_SURROGATE_START..=UTF16_HIGH_SURROGATE_END).contains(&value)
+}
+
+fn is_low_surrogate(value: u32) -> bool {
+    (UTF16_LOW_SURROGATE_START..=UTF16_LOW_SURROGATE_END).contains(&value)
 }
 
 fn parse_json_hex4(bytes: &[u8], start: usize) -> Result<u32> {
@@ -582,19 +659,17 @@ fn verify_bundle(entry: &ExternalDetectorCatalogEntry, bundle: &Path) -> Result<
         )));
     }
     verify_manifest_executable(entry, &manifest)?;
-    fs::write(
-        bundle.join(VERIFIED_DETECTOR_STATE_FILE),
-        format!(
-            "schema_version={}\ntarget={}\nverified_unix_seconds={}\n",
-            EXTERNAL_DETECTOR_SCHEMA_VERSION,
-            entry.target,
-            app_paths::unix_timestamp_now()?
-        ),
-    )
-    .map_err(|error| {
+    let verified_path = bundle.join(VERIFIED_DETECTOR_STATE_FILE);
+    let verified_content = format!(
+        "schema_version={}\ntarget={}\nverified_unix_seconds={}\n",
+        EXTERNAL_DETECTOR_SCHEMA_VERSION,
+        entry.target,
+        app_paths::unix_timestamp_now()?
+    );
+    io_safe::atomic_write(&verified_path, &verified_content).map_err(|error| {
         RedactError::Config(format!(
             "Cannot write external detector verification state '{}': {}",
-            bundle.display(),
+            verified_path.display(),
             error
         ))
     })?;
@@ -605,18 +680,26 @@ fn verify_manifest_executable(
     entry: &ExternalDetectorCatalogEntry,
     manifest: &BundleManifest,
 ) -> Result<()> {
-    if !manifest.executable_path.is_file() {
-        return Err(RedactError::Config(format!(
-            "External detector '{}' executable '{}' is missing.",
-            entry.target,
-            manifest.executable_path.display()
-        )));
-    }
+    ensure_manifest_executable_present(entry, manifest)?;
     let actual_sha256 = crate::provider::sha256_hex_of_path(&manifest.executable_path)?;
     if actual_sha256 != manifest.executable_sha256 {
         return Err(RedactError::Config(format!(
             "External detector '{}' failed executable integrity verification.",
             entry.target
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_manifest_executable_present(
+    entry: &ExternalDetectorCatalogEntry,
+    manifest: &BundleManifest,
+) -> Result<()> {
+    if !manifest.executable_path.is_file() {
+        return Err(RedactError::Config(format!(
+            "External detector '{}' executable '{}' is missing.",
+            entry.target,
+            manifest.executable_path.display()
         )));
     }
     Ok(())
@@ -657,7 +740,7 @@ fn write_bundle_manifest(path: &Path, manifest: &BundleManifest) -> Result<()> {
         manifest.executable_path.display(),
         manifest.executable_sha256
     );
-    fs::write(path, content).map_err(|error| {
+    io_safe::atomic_write(path, &content).map_err(|error| {
         RedactError::Config(format!(
             "Cannot write external detector metadata '{}': {}",
             path.display(),
@@ -829,7 +912,7 @@ fn save_active_targets(targets: &[String]) -> Result<()> {
         content.push_str(target);
         content.push('\n');
     }
-    fs::write(&path, content).map_err(|error| {
+    io_safe::atomic_write(&path, &content).map_err(|error| {
         RedactError::Config(format!(
             "Cannot write active external detectors '{}': {}",
             path.display(),
@@ -853,15 +936,12 @@ fn save_default_enabled(enabled: bool) -> Result<()> {
             error
         ))
     })?;
-    fs::write(
-        &path,
-        format!(
-            "schema_version={}\nenabled={}\n",
-            EXTERNAL_DETECTOR_SCHEMA_VERSION,
-            if enabled { "true" } else { "false" }
-        ),
-    )
-    .map_err(|error| {
+    let content = format!(
+        "schema_version={}\nenabled={}\n",
+        EXTERNAL_DETECTOR_SCHEMA_VERSION,
+        if enabled { "true" } else { "false" }
+    );
+    io_safe::atomic_write(&path, &content).map_err(|error| {
         RedactError::Config(format!(
             "Cannot write external detector default '{}': {}",
             path.display(),
@@ -938,6 +1018,22 @@ mod tests {
             json_string_field(line, "Raw").unwrap(),
             Some("sk_live_1\nnext".to_string())
         );
+    }
+
+    #[test]
+    fn json_string_field_reads_surrogate_pairs() {
+        let line = r#"{"Raw":"token-\uD83D\uDE00"}"#;
+        assert_eq!(
+            json_string_field(line, "Raw").unwrap(),
+            Some("token-😀".to_string())
+        );
+    }
+
+    #[test]
+    fn json_string_field_rejects_unpaired_surrogate() {
+        let line = r#"{"Raw":"token-\uD83D"}"#;
+        let error = json_string_field(line, "Raw").unwrap_err();
+        assert!(error.to_string().contains("invalid unicode surrogate pair"));
     }
 
     #[test]

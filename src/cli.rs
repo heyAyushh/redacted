@@ -1151,7 +1151,14 @@ fn parse_external_detector_verify(args: &[String]) -> Result<ExternalDetectorSub
 
     while index < args.len() {
         match args[index].as_str() {
-            "--all" => all = true,
+            "--all" => {
+                if selector.is_some() {
+                    return Err(RedactError::Usage(
+                        "Detector verify accepts one selector or --all.\n  redacted detector verify trufflehog\n  redacted detector verify --all".into(),
+                    ));
+                }
+                all = true;
+            }
             value => {
                 if selector.is_some() || all {
                     return Err(RedactError::Usage(
@@ -1174,7 +1181,14 @@ fn parse_external_detector_disable(args: &[String]) -> Result<ExternalDetectorSu
 
     while index < args.len() {
         match args[index].as_str() {
-            "--all" => all = true,
+            "--all" => {
+                if selector.is_some() {
+                    return Err(RedactError::Usage(
+                        "Detector disable accepts one selector or --all.\n  redacted detector disable trufflehog\n  redacted detector disable --all".into(),
+                    ));
+                }
+                all = true;
+            }
             value => {
                 if selector.is_some() || all {
                     return Err(RedactError::Usage(

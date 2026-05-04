@@ -153,7 +153,7 @@ fn add_fake_trufflehog_to_env(
     fs::write(
         &tool_path,
         format!(
-            "#!/usr/bin/env python3\nimport json\nimport sys\nsys.stdout.write(json.dumps({{\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
+            "#!/usr/bin/env python3\nimport json\nimport os\nimport pathlib\nimport sys\nmarker = os.environ.get('FAKE_TRUFFLEHOG_MUTATE_MARKER')\nif marker and not pathlib.Path(marker).exists():\n    pathlib.Path(marker).write_text('mutated')\n    pathlib.Path(sys.argv[0]).write_text(pathlib.Path(sys.argv[0]).read_text() + '\\n# mutated')\nsys.stdout.write(json.dumps({{\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
             raw = raw_secret
         ),
     )?;
@@ -966,6 +966,78 @@ fn external_detector_default_on_and_no_detectors_override() {
     );
     assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains(raw_secret));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_default_on_respects_allow_pattern_before_readiness() {
+    let (config_root, _data_root, envs) =
+        isolated_state_env("detector_default_allow_without_active");
+    let input_path = config_root.join("sample.txt");
+    fs::write(&input_path, "user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "default", "on"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(
+        &[
+            "--input",
+            input_path.to_str().unwrap(),
+            "--allow-pattern",
+            "EMAIL",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_rejects_mixed_disable_selector_and_all() {
+    let (_config_root, _data_root, envs) = isolated_state_env("detector_disable_mixed");
+    let (_stdout, stderr, code) =
+        run_with_env(&["detector", "disable", "trufflehog", "--all"], &envs);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("Detector disable accepts one selector or --all"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_does_not_rehash_executable_per_file() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_no_per_file_rehash");
+    let raw_secret = "hog_secret_directory_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+    let marker_path = data_root.join("mutate-marker");
+    envs.push((
+        "FAKE_TRUFFLEHOG_MUTATE_MARKER".into(),
+        marker_path.to_string_lossy().into_owned(),
+    ));
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), format!("first {}", raw_secret)).unwrap();
+    fs::write(input_dir.join("b.txt"), format!("second {}", raw_secret)).unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"a.txt\""));
+    assert!(stderr.contains("\"path\": \"b.txt\""));
+    assert!(stderr.contains("\"files_processed\": 2"));
 }
 
 #[cfg(unix)]
