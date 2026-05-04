@@ -565,10 +565,18 @@ fn trufflehog_source_path(line: &str) -> Result<Option<PathBuf>> {
 
 fn normalize_reported_path(scan_root: &Path, reported: &Path) -> PathBuf {
     if reported.is_absolute() {
-        reported.to_path_buf()
-    } else {
-        scan_root.join(reported)
+        return reported.to_path_buf();
     }
+    if reported.starts_with(scan_root) {
+        return reported.to_path_buf();
+    }
+    if let Some(parent) = scan_root.parent() {
+        let sibling_scoped = parent.join(reported);
+        if sibling_scoped.starts_with(scan_root) {
+            return sibling_scoped;
+        }
+    }
+    scan_root.join(reported)
 }
 
 fn find_secret_spans(
@@ -1376,6 +1384,22 @@ mod tests {
         assert_eq!(
             trufflehog_source_path(line).unwrap(),
             Some(PathBuf::from("repo/a.txt"))
+        );
+    }
+
+    #[test]
+    fn normalize_reported_path_keeps_paths_already_under_relative_root() {
+        assert_eq!(
+            normalize_reported_path(Path::new("repo"), Path::new("repo/a.txt")),
+            PathBuf::from("repo/a.txt")
+        );
+    }
+
+    #[test]
+    fn normalize_reported_path_maps_root_named_paths_under_absolute_root() {
+        assert_eq!(
+            normalize_reported_path(Path::new("/tmp/work/repo"), Path::new("repo/a.txt")),
+            PathBuf::from("/tmp/work/repo/a.txt")
         );
     }
 }

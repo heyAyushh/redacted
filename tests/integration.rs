@@ -59,6 +59,23 @@ fn run_with_env(args: &[&str], envs: &[(String, String)]) -> (String, String, i3
     (stdout, stderr, code)
 }
 
+fn run_with_env_current_dir(
+    args: &[&str],
+    envs: &[(String, String)],
+    current_dir: &std::path::Path,
+) -> (String, String, i32) {
+    let mut command = Command::new(binary_path());
+    command.args(args).current_dir(current_dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("Failed to execute binary");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    (stdout, stderr, code)
+}
+
 fn run_with_stdin_env(
     args: &[&str],
     stdin: &str,
@@ -1193,6 +1210,38 @@ fn external_detector_directory_uses_unscoped_trufflehog_findings() {
     assert!(stderr.contains("\"path\": \"a.txt\""));
     assert!(stderr.contains("\"detector\": \"TRUFFLEHOG_SECRET\""));
     assert!(stderr.contains("\"files_processed\": 2"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_keeps_findings_for_relative_input_path() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_relative_input_path");
+    let raw_secret = "hog_secret_relative_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), format!("secret {}", raw_secret)).unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env_current_dir(
+        &[
+            "--detectors",
+            "--input",
+            "repo",
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+        &data_root,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"a.txt\""));
+    assert!(stderr.contains("\"detector\": \"TRUFFLEHOG_SECRET\""));
 }
 
 #[cfg(unix)]
