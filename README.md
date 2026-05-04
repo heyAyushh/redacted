@@ -176,7 +176,7 @@ redacted detector use trufflehog
 redacted --input logs/ --summary --detectors
 
 # Enable the PDF document adapter once
-redacted document enable pdf-inspector
+redacted document enable pdf
 
 # Scan a PDF through the document adapter path
 redacted --input report.pdf --document-adapter
@@ -390,16 +390,20 @@ Important behavior:
 `redacted` can also run an optional document extraction step for supported non-text files.
 
 - Feature flag: `--document-adapter`
-- Current built-in alias: `pdf-inspector`
-- Exact target: `pdf-inspector/local-v1`
+- Current built-in alias: `pdf`
+- Exact target: `poppler/pdftotext-v1`
 - Runtime: local `pdftotext`
+
+The short `pdf` alias is the human path for the PDF document type. Exact targets
+name the adapter implementation, so the PDF adapter can be switched later
+without making humans type long names.
 
 When `--document-adapter` is enabled and the input is a supported document type (`.pdf` in v1), `redacted` extracts text first and then applies the same detector, merge, retain/except, reporting, and redaction pipeline.
 
 Setup flow:
 
 ```bash
-redacted document enable pdf-inspector
+redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
@@ -408,7 +412,7 @@ Switching and lifecycle:
 ```bash
 redacted document list
 redacted document current
-redacted document use pdf-inspector/local-v1
+redacted document use poppler/pdftotext-v1
 redacted document verify --all
 redacted document disable
 ```
@@ -542,9 +546,9 @@ redacted document disable
 Examples:
 
 ```bash
-redacted document enable pdf-inspector
-redacted document install pdf-inspector/local-v1
-redacted document use pdf-inspector
+redacted document enable pdf
+redacted document install poppler/pdftotext-v1
+redacted document use pdf
 redacted document verify --all
 ```
 
@@ -650,8 +654,8 @@ The checked-in lock files and provider catalog pin the exact downloaded artifact
 with URLs, byte sizes, and SHA-256 hashes.
 
 The extension license policy and contribution checklist live in
-[docs/extension-licenses.md](docs/extension-licenses.md). Firecrawl
-`pdf-inspector` is intentionally not integrated until its license is clarified.
+[docs/extension-licenses.md](docs/extension-licenses.md). The `pdf` alias names
+the document type; exact targets name the active adapter implementation.
 
 ---
 

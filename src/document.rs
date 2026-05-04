@@ -19,12 +19,12 @@ const DOCUMENT_BUNDLE_MANIFEST_FILE: &str = "bundle.state";
 const DOCUMENT_BUNDLES_DIR: &str = "document-adapters";
 const DOCUMENT_RUNNER_DIR: &str = "runner";
 
-const PDF_INSPECTOR_ALIAS: &str = "pdf-inspector";
-const PDF_INSPECTOR_TARGET: &str = "pdf-inspector/local-v1";
-const PDF_INSPECTOR_ADAPTER: &str = "pdftotext-local";
-const PDF_INSPECTOR_RUNNER_NAME: &str = "pdf_inspector_runner.py";
+const PDF_ADAPTER_ALIAS: &str = "pdf";
+const PDF_ADAPTER_TARGET: &str = "poppler/pdftotext-v1";
+const PDF_ADAPTER_NAME: &str = "pdftotext-local";
+const PDF_ADAPTER_RUNNER_NAME: &str = "pdftotext_runner.py";
 
-const PDF_INSPECTOR_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
+const PDF_ADAPTER_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import argparse
 import pathlib
 import subprocess
@@ -74,15 +74,15 @@ struct DocumentCatalogEntry {
     license: ExtensionLicenseMetadata,
 }
 
-const PDF_INSPECTOR_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
-    target: PDF_INSPECTOR_TARGET,
-    provider: "pdf-inspector",
-    model: "local-v1",
-    aliases: &[PDF_INSPECTOR_ALIAS],
-    adapter: PDF_INSPECTOR_ADAPTER,
-    runner_name: PDF_INSPECTOR_RUNNER_NAME,
+const PDF_ADAPTER_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
+    target: PDF_ADAPTER_TARGET,
+    provider: "poppler",
+    model: "pdftotext-v1",
+    aliases: &[PDF_ADAPTER_ALIAS],
+    adapter: PDF_ADAPTER_NAME,
+    runner_name: PDF_ADAPTER_RUNNER_NAME,
     license: ExtensionLicenseMetadata {
-        target: PDF_INSPECTOR_TARGET,
+        target: PDF_ADAPTER_TARGET,
         kind: ExtensionKind::Document,
         source_url: "https://poppler.freedesktop.org/",
         license: "GPL-2.0-or-later",
@@ -93,7 +93,7 @@ const PDF_INSPECTOR_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
     },
 };
 
-const DOCUMENT_CATALOG: [DocumentCatalogEntry; 1] = [PDF_INSPECTOR_ENTRY];
+const DOCUMENT_CATALOG: [DocumentCatalogEntry; 1] = [PDF_ADAPTER_ENTRY];
 
 #[derive(Debug)]
 pub struct DocumentSession {
@@ -198,7 +198,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
                 }
             } else {
                 io_safe::write_stdout(
-                    "No active document adapter configured.\nSet one up with:\n  redacted document enable pdf-inspector\n",
+                    "No active document adapter configured.\nSet one up with:\n  redacted document enable pdf\n",
                 )?;
             }
         }
@@ -232,7 +232,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
                     None => {
                         let active = load_active_state()?.ok_or_else(|| {
                             RedactError::Usage(
-                                "No active document adapter is configured.\n  redacted document enable pdf-inspector".into(),
+                                "No active document adapter is configured.\n  redacted document enable pdf".into(),
                             )
                         })?;
                         find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -272,7 +272,7 @@ pub fn run_document_command(args: &DocumentArgs) -> Result<i32> {
 pub fn start_active_session() -> Result<DocumentSession> {
     let active = load_active_state()?.ok_or_else(|| {
         RedactError::Usage(
-            "No active document adapter is configured.\n  redacted document enable pdf-inspector\n  redacted document list".into(),
+            "No active document adapter is configured.\n  redacted document enable pdf\n  redacted document list".into(),
         )
     })?;
     let entry = find_catalog_entry_by_target(&active.target).ok_or_else(|| {
@@ -372,7 +372,7 @@ fn install_target(entry: &'static DocumentCatalogEntry) -> Result<InstallOutcome
     })?;
 
     let install_result = match entry.target {
-        PDF_INSPECTOR_TARGET => install_pdf_inspector_bundle(entry, &temp_bundle),
+        PDF_ADAPTER_TARGET => install_pdf_adapter_bundle(entry, &temp_bundle),
         _ => Err(RedactError::Usage(format!(
             "Unknown document adapter target '{}'.",
             entry.target
@@ -414,7 +414,7 @@ fn install_target(entry: &'static DocumentCatalogEntry) -> Result<InstallOutcome
     })
 }
 
-fn install_pdf_inspector_bundle(entry: &DocumentCatalogEntry, temp_bundle: &Path) -> Result<()> {
+fn install_pdf_adapter_bundle(entry: &DocumentCatalogEntry, temp_bundle: &Path) -> Result<()> {
     let runner_dir = temp_bundle.join(DOCUMENT_RUNNER_DIR);
     fs::create_dir_all(&runner_dir).map_err(|error| {
         RedactError::Config(format!(
@@ -424,7 +424,7 @@ fn install_pdf_inspector_bundle(entry: &DocumentCatalogEntry, temp_bundle: &Path
         ))
     })?;
     let runner_path = runner_dir.join(entry.runner_name);
-    io_safe::atomic_write(&runner_path, PDF_INSPECTOR_RUNNER_SCRIPT)?;
+    io_safe::atomic_write(&runner_path, PDF_ADAPTER_RUNNER_SCRIPT)?;
     #[cfg(unix)]
     {
         fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).map_err(|error| {
@@ -481,7 +481,7 @@ fn verify_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path) -> Re
             error
         ))
     })?;
-    if runner_bytes != PDF_INSPECTOR_RUNNER_SCRIPT.as_bytes() {
+    if runner_bytes != PDF_ADAPTER_RUNNER_SCRIPT.as_bytes() {
         return Err(RedactError::Config(format!(
             "Document adapter '{}' failed integrity verification.",
             entry.target
@@ -563,7 +563,7 @@ fn ensure_command_available(command: &str, args: &[&str], guidance: &str) -> Res
         Ok(_) => Ok(()),
         Err(error) => Err(RedactError::Usage(format!(
             "Document adapter '{}' requires '{}' in PATH.\n{}:\n  redacted document verify {}\nUnderlying error: {}",
-            PDF_INSPECTOR_TARGET, command, guidance, PDF_INSPECTOR_ALIAS, error
+            PDF_ADAPTER_TARGET, command, guidance, PDF_ADAPTER_ALIAS, error
         ))),
     }
 }
@@ -773,8 +773,8 @@ mod tests {
 
     #[test]
     fn resolve_document_alias() {
-        let entry = resolve_catalog_entry("pdf-inspector").unwrap();
-        assert_eq!(entry.target, PDF_INSPECTOR_TARGET);
+        let entry = resolve_catalog_entry("pdf").unwrap();
+        assert_eq!(entry.target, PDF_ADAPTER_TARGET);
     }
 
     #[test]

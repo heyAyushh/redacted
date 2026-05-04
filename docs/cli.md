@@ -230,7 +230,7 @@ default Rust-only detector path because it wraps an external extraction runtime.
 
 Current built-in target:
 
-- `pdf-inspector/local-v1` backed by local `pdftotext`
+- `poppler/pdftotext-v1` backed by local `pdftotext`
 
 | Command | Description |
 |---------|-------------|
@@ -245,9 +245,9 @@ Current built-in target:
 Examples:
 
 ```bash
-redacted document enable pdf-inspector
-redacted document install pdf-inspector/local-v1
-redacted document use pdf-inspector
+redacted document enable pdf
+redacted document install poppler/pdftotext-v1
+redacted document use pdf
 redacted document current
 redacted document verify --all
 redacted document disable
@@ -255,7 +255,9 @@ redacted document disable
 
 Notes:
 
-- `pdf-inspector` resolves to `pdf-inspector/local-v1`
+- `pdf` resolves to `poppler/pdftotext-v1`
+- `pdf` is the short human alias for the PDF document type; exact targets name
+  the adapter implementation.
 - `redacted --document-adapter ...` never installs adapters during a scan
 - if no active adapter is configured, `--document-adapter` fails fast with the next setup command
 - `--in-place` is blocked for document-adapter extracted files; use `--output` for persisted output

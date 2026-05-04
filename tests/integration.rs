@@ -255,8 +255,8 @@ fn install_fake_document_bundle(
 ) {
     let bundle_root = data_root
         .join("document-adapters")
-        .join("pdf-inspector")
-        .join("local-v1");
+        .join("poppler")
+        .join("pdftotext-v1");
     fs::create_dir_all(bundle_root.join("runner")).unwrap();
     let runner_path = bundle_root.join("runner").join("fake_document_runner.py");
     fs::write(&runner_path, runner_contents).unwrap();
@@ -264,7 +264,7 @@ fn install_fake_document_bundle(
     fs::write(
         bundle_root.join("bundle.state"),
         "schema_version=1\n\
-target=pdf-inspector/local-v1\n\
+target=poppler/pdftotext-v1\n\
 adapter=pdftotext-local\n\
 runner_rel=runner/fake_document_runner.py\n",
     )
@@ -272,14 +272,14 @@ runner_rel=runner/fake_document_runner.py\n",
     fs::write(
         bundle_root.join("verified.state"),
         "schema_version=1\n\
-target=pdf-inspector/local-v1\n\
+target=poppler/pdftotext-v1\n\
 verified_unix_seconds=1\n",
     )
     .unwrap();
     if activate {
         fs::write(
             config_root.join("active-document-adapter.state"),
-            "target=pdf-inspector/local-v1\n",
+            "target=poppler/pdftotext-v1\n",
         )
         .unwrap();
     }
@@ -433,7 +433,7 @@ fn document_enable_help_flag() {
     let (_, stderr, code) = run(&["document", "enable", "--help"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("redacted document enable"));
-    assert!(stderr.contains("pdf-inspector/local-v1"));
+    assert!(stderr.contains("poppler/pdftotext-v1"));
 }
 
 #[test]
@@ -553,7 +553,7 @@ fn document_current_without_active_shows_onboarding() {
     let (stdout, _, code) = run_with_env(&["document", "current"], &envs);
     assert_eq!(code, 0);
     assert!(stdout.contains("No active document adapter configured"));
-    assert!(stdout.contains("redacted document enable pdf-inspector"));
+    assert!(stdout.contains("redacted document enable pdf"));
 }
 
 #[cfg(unix)]
@@ -577,14 +577,14 @@ fn document_use_alias_sets_exact_active_target() {
     add_fake_pdftotext_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
     install_fake_document_bundle(&config_root, &data_root, &fake_document_runner(), false);
 
-    let (stdout, stderr, code) = run_with_env(&["document", "use", "pdf-inspector"], &envs);
+    let (stdout, stderr, code) = run_with_env(&["document", "use", "pdf"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
     assert!(stdout.contains("notice: PDF document adapter calls the local Poppler pdftotext"));
-    assert!(stdout.contains("resolved target: pdf-inspector/local-v1"));
+    assert!(stdout.contains("resolved target: poppler/pdftotext-v1"));
 
     let active_state =
         fs::read_to_string(config_root.join("active-document-adapter.state")).unwrap();
-    assert!(active_state.contains("pdf-inspector/local-v1"));
+    assert!(active_state.contains("poppler/pdftotext-v1"));
 
     let (stdout, stderr, code) = run_with_env(&["document", "list"], &envs);
     assert_eq!(code, 0, "stderr: {}", stderr);
@@ -745,7 +745,7 @@ fn document_adapter_requires_active_adapter() {
     );
     assert_eq!(code, 2);
     assert!(stderr.contains("No active document adapter is configured"));
-    assert!(stderr.contains("redacted document enable pdf-inspector"));
+    assert!(stderr.contains("redacted document enable pdf"));
 }
 
 #[cfg(unix)]

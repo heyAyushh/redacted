@@ -73,7 +73,7 @@ redacted detector use trufflehog
 redacted --detectors --input logs/
 
 # Enable the PDF document adapter
-redacted document enable pdf-inspector
+redacted document enable pdf
 
 # Scan a PDF through the adapter
 redacted --input report.pdf --document-adapter

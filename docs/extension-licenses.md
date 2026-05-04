@@ -50,12 +50,14 @@ redacted document list
 | `openai/privacy-filter-v1` | provider | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635) and [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original) | Apache-2.0 | downloaded-artifact | no | yes |
 | `openai/privacy-filter-v1-mlx` | provider | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) | Apache-2.0 | downloaded-artifact | no | yes |
 | `trufflehog/secrets-v1` | detector | [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) | AGPL-3.0 | external-binary | no | no |
-| `pdf-inspector/local-v1` | document | [Poppler pdftotext](https://poppler.freedesktop.org/) | GPL-2.0-or-later | external-binary | no | no |
+| `poppler/pdftotext-v1` | document | [Poppler pdftotext](https://poppler.freedesktop.org/) | GPL-2.0-or-later | external-binary | no | no |
 
-## Deferred Extensions
+## Reserved Extension Names
 
-Firecrawl `pdf-inspector` is not integrated. GitHub did not show a clear license
-during review, so it should stay disabled/waiting until its license is clarified.
+Firecrawl PDF Inspector should use a separate future target such as
+`firecrawl/pdf-inspector-v1`. Do not use `pdf-inspector` for the Poppler
+adapter; `pdf` is the human alias for the currently active PDF document type,
+and the exact target names the selected adapter implementation.
 
 ## Contribution Checklist
 

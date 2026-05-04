@@ -262,6 +262,8 @@ redacted --input report.pdf --document-adapter
 ```
 
 Document adapters extract text first. The core detector, merge, policy, redaction, and reporting pipeline still belongs to `redacted`.
+The `pdf` alias is the short user-facing selector for the PDF document type;
+exact targets such as `poppler/pdftotext-v1` name the adapter implementation.
 
 ---
 
@@ -368,6 +370,8 @@ Rules:
 - Adapter runner paths must be validated as bundle-relative child paths.
 - Adapter output is extracted text only; `redacted` still owns detection and redaction.
 - Document adapter catalog entries must declare extension license metadata.
+- Keep document-type aliases short. Use exact targets to distinguish swappable
+  adapter implementations.
 
 ## 15. Optional External Detector Architecture
 

@@ -247,7 +247,7 @@ USAGE:
   redacted provider enable mlx
   redacted detector install trufflehog
   redacted detector use trufflehog
-  redacted document enable pdf-inspector
+  redacted document enable pdf
   redacted benchmark --input logs/ --iterations 5 --privacy-filter
 
 INPUT (resolved in this order):
@@ -334,7 +334,7 @@ EXAMPLES:
   redacted detector install trufflehog
   redacted detector use trufflehog
   redacted --detectors --input repo/
-  redacted document enable pdf-inspector
+  redacted document enable pdf
   redacted --input report.pdf --document-adapter
   redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
   redacted provider list
@@ -604,11 +604,11 @@ OVERVIEW:
   Document adapters are optional and off by default.
   They convert supported non-text files into text before scanning.
   Current built-in alias:
-    pdf-inspector -> pdf-inspector/local-v1
+    pdf -> poppler/pdftotext-v1
 
 EXAMPLES:
-  redacted document enable pdf-inspector
-  redacted document use pdf-inspector/local-v1
+  redacted document enable pdf
+  redacted document use poppler/pdftotext-v1
   redacted document list
   redacted --input report.pdf --document-adapter"#
         }
@@ -619,8 +619,8 @@ USAGE:
   redacted document enable <adapter-or-target>
 
 EXAMPLES:
-  redacted document enable pdf-inspector
-  redacted document enable pdf-inspector/local-v1"#
+  redacted document enable pdf
+  redacted document enable poppler/pdftotext-v1"#
         }
         DocumentHelpTopic::Install => {
             r#"redacted document install — install and verify an adapter without activating it.
@@ -629,8 +629,8 @@ USAGE:
   redacted document install <adapter-or-target>
 
 EXAMPLES:
-  redacted document install pdf-inspector
-  redacted document install pdf-inspector/local-v1"#
+  redacted document install pdf
+  redacted document install poppler/pdftotext-v1"#
         }
         DocumentHelpTopic::Use => {
             r#"redacted document use — switch active adapter to an installed, verified target.
@@ -639,8 +639,8 @@ USAGE:
   redacted document use <adapter-or-target>
 
 EXAMPLES:
-  redacted document use pdf-inspector
-  redacted document use pdf-inspector/local-v1"#
+  redacted document use pdf
+  redacted document use poppler/pdftotext-v1"#
         }
         DocumentHelpTopic::Current => {
             r#"redacted document current — show the active document adapter target.
@@ -662,8 +662,8 @@ USAGE:
 
 EXAMPLES:
   redacted document verify
-  redacted document verify pdf-inspector
-  redacted document verify pdf-inspector/local-v1
+  redacted document verify pdf
+  redacted document verify poppler/pdftotext-v1
   redacted document verify --all"#
         }
         DocumentHelpTopic::Disable => {
@@ -1214,7 +1214,7 @@ const PROVIDER_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
 const DOCUMENT_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
     family: "document",
     selector_name: "adapter-or-target",
-    example_selector: "pdf-inspector",
+    example_selector: "pdf",
 };
 
 enum ManagedHelpTopic {
@@ -1719,13 +1719,13 @@ mod tests {
 
     #[test]
     fn parse_document_enable_alias() {
-        let cli = parse_args_from(&args(&["document", "enable", "pdf-inspector"])).unwrap();
+        let cli = parse_args_from(&args(&["document", "enable", "pdf"])).unwrap();
         assert_eq!(
             cli.document,
             Some(DocumentArgs {
                 help: None,
                 command: Some(DocumentSubcommand::Enable {
-                    selector: "pdf-inspector".into(),
+                    selector: "pdf".into(),
                 }),
             })
         );

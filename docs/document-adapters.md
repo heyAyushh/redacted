@@ -20,14 +20,16 @@ This document describes the optional document adapter subsystem behind
 
 `redacted` supports two selector forms:
 
-- Alias: `pdf-inspector`
-- Exact target: `pdf-inspector/local-v1`
+- Alias: `pdf`
+- Exact target: `poppler/pdftotext-v1`
 
 Aliases are onboarding shortcuts. They resolve to pinned exact targets.
+For document types, the short alias should stay human-sized. The exact target
+names the current adapter implementation.
 
 Current built-in mapping:
 
-- `pdf-inspector -> pdf-inspector/local-v1`
+- `pdf -> poppler/pdftotext-v1`
 
 ## Commands
 
@@ -44,7 +46,7 @@ redacted document disable
 Human-friendly setup:
 
 ```bash
-redacted document enable pdf-inspector
+redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
@@ -52,7 +54,7 @@ redacted --input report.pdf --document-adapter
 
 Current v1 adapter target:
 
-- `pdf-inspector/local-v1`
+- `poppler/pdftotext-v1`
 - Adapter runtime: local `pdftotext` command
 - Distribution: external binary, not vendored into the MIT core
 - Supported input extensions in v1: `.pdf`
@@ -84,11 +86,11 @@ Important files:
 Example bundle layout:
 
 ```text
-<data-root>/document-adapters/pdf-inspector/local-v1/
+<data-root>/document-adapters/poppler/pdftotext-v1/
   bundle.state
   verified.state
   runner/
-    pdf_inspector_runner.py
+    pdftotext_runner.py
 ```
 
 ## Integrity Verification
@@ -138,12 +140,12 @@ shape.
 ## Troubleshooting
 
 - No active adapter:
-  - `redacted document enable pdf-inspector`
+  - `redacted document enable pdf`
 - Need to see install state:
   - `redacted document list`
 - Bundle installed but not active:
-  - `redacted document use pdf-inspector`
+  - `redacted document use pdf`
 - Missing local runtime:
-  - install `pdftotext`, then run `redacted document verify pdf-inspector`
+  - install `pdftotext`, then run `redacted document verify pdf`
 - Clear current adapter:
   - `redacted document disable`
