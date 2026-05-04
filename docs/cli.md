@@ -228,9 +228,10 @@ Use `redacted document ...` to install, verify, and switch optional
 document adapters. This path is explicit and lower-trust than the
 default Rust-only detector path because it wraps an external extraction runtime.
 
-Current built-in target:
+Current built-in targets:
 
 - `poppler/pdftotext-v1` backed by local `pdftotext`
+- `firecrawl/pdf-inspector-v1` backed by local Firecrawl `pdf2md`
 
 | Command | Description |
 |---------|-------------|
@@ -246,6 +247,7 @@ Examples:
 
 ```bash
 redacted document enable pdf
+redacted document enable firecrawl-pdf
 redacted document install poppler/pdftotext-v1
 redacted document use pdf
 redacted document current
@@ -256,6 +258,7 @@ redacted document disable
 Notes:
 
 - `pdf` resolves to `poppler/pdftotext-v1`
+- `firecrawl-pdf` resolves to `firecrawl/pdf-inspector-v1`
 - `pdf` is the short human alias for the PDF document type; exact targets name
   the adapter implementation.
 - `redacted --document-adapter ...` never installs adapters during a scan

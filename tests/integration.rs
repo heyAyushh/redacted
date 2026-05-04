@@ -188,6 +188,33 @@ fn add_fake_pdftotext_to_env(
 }
 
 #[cfg(unix)]
+fn add_fake_pdf2md_to_env(
+    envs: &mut Vec<(String, String)>,
+    root: &std::path::Path,
+) -> std::io::Result<()> {
+    let bin_dir = root.join("fake-bin");
+    fs::create_dir_all(&bin_dir)?;
+    let tool_path = bin_dir.join("pdf2md");
+    fs::write(
+        &tool_path,
+        r#"#!/usr/bin/env python3
+import pathlib
+import sys
+
+input_path = pathlib.Path(sys.argv[1])
+sys.stdout.write(input_path.read_text(encoding="utf-8", errors="ignore"))
+"#,
+    )?;
+    fs::set_permissions(&tool_path, fs::Permissions::from_mode(0o755))?;
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    envs.push((
+        "PATH".to_string(),
+        format!("{}:{}", bin_dir.to_string_lossy(), current_path),
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
 fn install_fake_provider_bundle(
     config_root: &std::path::Path,
     data_root: &std::path::Path,
@@ -592,6 +619,41 @@ fn document_use_alias_sets_exact_active_target() {
     assert!(stdout.contains("distribution=external-binary"));
     assert!(stdout.contains("bundled=no"));
     assert!(stdout.contains("network_default=no"));
+}
+
+#[cfg(unix)]
+#[test]
+fn document_firecrawl_pdf_installs_uses_and_redacts_pdf() {
+    let (config_root, data_root, mut envs) = provider_env("document_firecrawl_pdf");
+    add_fake_pdf2md_to_env(&mut envs, config_root.parent().unwrap()).unwrap();
+
+    let (stdout, stderr, code) = run_with_env(&["document", "enable", "firecrawl-pdf"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("resolved target: firecrawl/pdf-inspector-v1"));
+    assert!(stdout.contains("verified: yes"));
+    assert!(!stdout.contains("notice:"));
+
+    let active_state =
+        fs::read_to_string(config_root.join("active-document-adapter.state")).unwrap();
+    assert!(active_state.contains("firecrawl/pdf-inspector-v1"));
+
+    let (stdout, stderr, code) = run_with_env(&["document", "list"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("firecrawl-pdf -> firecrawl/pdf-inspector-v1"));
+    assert!(stdout.contains("adapter=firecrawl-pdf-inspector-local"));
+    assert!(stdout.contains("license=MIT"));
+    assert!(stdout.contains("distribution=external-binary"));
+    assert!(stdout.contains("active=yes"));
+
+    let pdf_path = data_root.join("firecrawl-report.pdf");
+    fs::write(&pdf_path, "Jane uses jane@example.com").unwrap();
+    let (stdout, stderr, code) = run_with_env(
+        &["--input", pdf_path.to_str().unwrap(), "--document-adapter"],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+    assert!(!stdout.contains("jane@example.com"));
 }
 
 #[cfg(unix)]

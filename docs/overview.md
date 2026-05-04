@@ -75,6 +75,9 @@ redacted --detectors --input logs/
 # Enable the PDF document adapter
 redacted document enable pdf
 
+# Or switch PDF extraction to Firecrawl PDF Inspector
+redacted document enable firecrawl-pdf
+
 # Scan a PDF through the adapter
 redacted --input report.pdf --document-adapter
 

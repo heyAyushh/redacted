@@ -261,9 +261,17 @@ redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
+Firecrawl PDF Inspector is available as a separate adapter:
+
+```bash
+redacted document enable firecrawl-pdf
+redacted --input report.pdf --document-adapter
+```
+
 Document adapters extract text first. The core detector, merge, policy, redaction, and reporting pipeline still belongs to `redacted`.
 The `pdf` alias is the short user-facing selector for the PDF document type;
-exact targets such as `poppler/pdftotext-v1` name the adapter implementation.
+exact targets such as `poppler/pdftotext-v1` and
+`firecrawl/pdf-inspector-v1` name the adapter implementation.
 
 ---
 

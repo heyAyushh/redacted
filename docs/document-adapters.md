@@ -20,8 +20,8 @@ This document describes the optional document adapter subsystem behind
 
 `redacted` supports two selector forms:
 
-- Alias: `pdf`
-- Exact target: `poppler/pdftotext-v1`
+- Aliases: `pdf`, `firecrawl-pdf`
+- Exact targets: `poppler/pdftotext-v1`, `firecrawl/pdf-inspector-v1`
 
 Aliases are onboarding shortcuts. They resolve to pinned exact targets.
 For document types, the short alias should stay human-sized. The exact target
@@ -30,6 +30,7 @@ names the current adapter implementation.
 Current built-in mapping:
 
 - `pdf -> poppler/pdftotext-v1`
+- `firecrawl-pdf -> firecrawl/pdf-inspector-v1`
 
 ## Commands
 
@@ -50,16 +51,25 @@ redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
+Firecrawl PDF Inspector setup:
+
+```bash
+redacted document enable firecrawl-pdf
+redacted --input report.pdf --document-adapter
+```
+
 ## Runtime and Support
 
-Current v1 adapter target:
+Current v1 adapter targets:
 
 - `poppler/pdftotext-v1`
-- Adapter runtime: local `pdftotext` command
+- `firecrawl/pdf-inspector-v1`
+- Adapter runtimes: local `pdftotext` command or local Firecrawl `pdf2md` command
 - Distribution: external binary, not vendored into the MIT core
 - Supported input extensions in v1: `.pdf`
 
-If `pdftotext` is unavailable, install fails fast with the next command to run.
+If `pdftotext` or `pdf2md` is unavailable for the selected adapter, install
+fails fast with the next command to run.
 
 ## State and Install Layout
 
@@ -91,6 +101,12 @@ Example bundle layout:
   verified.state
   runner/
     pdftotext_runner.py
+
+<data-root>/document-adapters/firecrawl/pdf-inspector-v1/
+  bundle.state
+  verified.state
+  runner/
+    firecrawl_pdf_inspector_runner.py
 ```
 
 ## Integrity Verification
@@ -145,6 +161,8 @@ shape.
   - `redacted document list`
 - Bundle installed but not active:
   - `redacted document use pdf`
+- Want Firecrawl PDF Inspector:
+  - install `pdf2md`, then run `redacted document enable firecrawl-pdf`
 - Missing local runtime:
   - install `pdftotext`, then run `redacted document verify pdf`
 - Clear current adapter:

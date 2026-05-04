@@ -603,11 +603,13 @@ USAGE:
 OVERVIEW:
   Document adapters are optional and off by default.
   They convert supported non-text files into text before scanning.
-  Current built-in alias:
+  Current built-in aliases:
     pdf -> poppler/pdftotext-v1
+    firecrawl-pdf -> firecrawl/pdf-inspector-v1
 
 EXAMPLES:
   redacted document enable pdf
+  redacted document enable firecrawl-pdf
   redacted document use poppler/pdftotext-v1
   redacted document list
   redacted --input report.pdf --document-adapter"#
@@ -620,7 +622,9 @@ USAGE:
 
 EXAMPLES:
   redacted document enable pdf
-  redacted document enable poppler/pdftotext-v1"#
+  redacted document enable firecrawl-pdf
+  redacted document enable poppler/pdftotext-v1
+  redacted document enable firecrawl/pdf-inspector-v1"#
         }
         DocumentHelpTopic::Install => {
             r#"redacted document install — install and verify an adapter without activating it.
@@ -630,7 +634,9 @@ USAGE:
 
 EXAMPLES:
   redacted document install pdf
-  redacted document install poppler/pdftotext-v1"#
+  redacted document install firecrawl-pdf
+  redacted document install poppler/pdftotext-v1
+  redacted document install firecrawl/pdf-inspector-v1"#
         }
         DocumentHelpTopic::Use => {
             r#"redacted document use — switch active adapter to an installed, verified target.
@@ -640,7 +646,9 @@ USAGE:
 
 EXAMPLES:
   redacted document use pdf
-  redacted document use poppler/pdftotext-v1"#
+  redacted document use firecrawl-pdf
+  redacted document use poppler/pdftotext-v1
+  redacted document use firecrawl/pdf-inspector-v1"#
         }
         DocumentHelpTopic::Current => {
             r#"redacted document current — show the active document adapter target.
@@ -663,7 +671,9 @@ USAGE:
 EXAMPLES:
   redacted document verify
   redacted document verify pdf
+  redacted document verify firecrawl-pdf
   redacted document verify poppler/pdftotext-v1
+  redacted document verify firecrawl/pdf-inspector-v1
   redacted document verify --all"#
         }
         DocumentHelpTopic::Disable => {

@@ -390,9 +390,9 @@ Important behavior:
 `redacted` can also run an optional document extraction step for supported non-text files.
 
 - Feature flag: `--document-adapter`
-- Current built-in alias: `pdf`
-- Exact target: `poppler/pdftotext-v1`
-- Runtime: local `pdftotext`
+- Current built-in aliases: `pdf`, `firecrawl-pdf`
+- Current exact targets: `poppler/pdftotext-v1`, `firecrawl/pdf-inspector-v1`
+- Runtime: local `pdftotext` or local Firecrawl `pdf2md`
 
 The short `pdf` alias is the human path for the PDF document type. Exact targets
 name the adapter implementation, so the PDF adapter can be switched later
@@ -407,12 +407,20 @@ redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
+Switch to Firecrawl PDF Inspector when its `pdf2md` CLI is installed locally:
+
+```bash
+redacted document enable firecrawl-pdf
+redacted --input report.pdf --document-adapter
+```
+
 Switching and lifecycle:
 
 ```bash
 redacted document list
 redacted document current
 redacted document use poppler/pdftotext-v1
+redacted document use firecrawl/pdf-inspector-v1
 redacted document verify --all
 redacted document disable
 ```
@@ -547,6 +555,7 @@ Examples:
 
 ```bash
 redacted document enable pdf
+redacted document enable firecrawl-pdf
 redacted document install poppler/pdftotext-v1
 redacted document use pdf
 redacted document verify --all
@@ -648,6 +657,7 @@ their own license metadata and remain separate from the MIT core.
 | Provider Python environments | Local model loading and span detection inside provider bundles | package-specific | downloaded artifacts | Hash-locked packages listed in `provider-locks/` |
 | External detector engine | Optional `trufflehog/secrets-v1` secret-scanner pass | AGPL-3.0 | external binary | Local [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) CLI, not vendored |
 | PDF document adapter | Optional PDF text extraction before the normal scan pipeline | GPL-2.0-or-later | external binary | Local `pdftotext` from [Poppler](https://poppler.freedesktop.org/) |
+| Firecrawl PDF adapter | Optional PDF-to-Markdown extraction before the normal scan pipeline | MIT | external binary | Local `pdf2md` from [Firecrawl PDF Inspector](https://github.com/firecrawl/pdf-inspector), not linked or vendored |
 
 Third-party models, tools, and Python packages keep their own upstream licenses.
 The checked-in lock files and provider catalog pin the exact downloaded artifacts

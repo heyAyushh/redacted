@@ -6,6 +6,7 @@ use crate::extension::{
 };
 use crate::io_safe;
 use crate::{app_paths, app_paths::yes_or_no};
+use std::env;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +24,11 @@ const PDF_ADAPTER_ALIAS: &str = "pdf";
 const PDF_ADAPTER_TARGET: &str = "poppler/pdftotext-v1";
 const PDF_ADAPTER_NAME: &str = "pdftotext-local";
 const PDF_ADAPTER_RUNNER_NAME: &str = "pdftotext_runner.py";
+const FIRECRAWL_PDF_ALIAS: &str = "firecrawl-pdf";
+const FIRECRAWL_PDF_TARGET: &str = "firecrawl/pdf-inspector-v1";
+const FIRECRAWL_PDF_ADAPTER: &str = "firecrawl-pdf-inspector-local";
+const FIRECRAWL_PDF_RUNNER_NAME: &str = "firecrawl_pdf_inspector_runner.py";
+const FIRECRAWL_PDF_EXECUTABLE: &str = "pdf2md";
 
 const PDF_ADAPTER_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
 import argparse
@@ -63,6 +69,39 @@ if __name__ == "__main__":
     raise SystemExit(main())
 "#;
 
+const FIRECRAWL_PDF_RUNNER_SCRIPT: &str = r#"#!/usr/bin/env python3
+import argparse
+import pathlib
+import subprocess
+import sys
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--executable", required=True)
+    args = parser.parse_args()
+
+    input_path = pathlib.Path(args.input)
+    if not input_path.is_file():
+        sys.stderr.write("input is not a file\n")
+        return 2
+
+    # Firecrawl pdf-inspector's pdf2md emits clean markdown with --raw.
+    command = [args.executable, str(input_path), "--raw"]
+    completed = subprocess.run(command, capture_output=True)
+    if completed.returncode != 0:
+        sys.stderr.write("pdf2md failed\n")
+        return 3
+    sys.stdout.buffer.write(completed.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DocumentCatalogEntry {
     target: &'static str,
@@ -71,6 +110,7 @@ struct DocumentCatalogEntry {
     aliases: &'static [&'static str],
     adapter: &'static str,
     runner_name: &'static str,
+    executable_name: Option<&'static str>,
     license: ExtensionLicenseMetadata,
 }
 
@@ -81,6 +121,7 @@ const PDF_ADAPTER_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
     aliases: &[PDF_ADAPTER_ALIAS],
     adapter: PDF_ADAPTER_NAME,
     runner_name: PDF_ADAPTER_RUNNER_NAME,
+    executable_name: None,
     license: ExtensionLicenseMetadata {
         target: PDF_ADAPTER_TARGET,
         kind: ExtensionKind::Document,
@@ -93,12 +134,33 @@ const PDF_ADAPTER_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
     },
 };
 
-const DOCUMENT_CATALOG: [DocumentCatalogEntry; 1] = [PDF_ADAPTER_ENTRY];
+const FIRECRAWL_PDF_ENTRY: DocumentCatalogEntry = DocumentCatalogEntry {
+    target: FIRECRAWL_PDF_TARGET,
+    provider: "firecrawl",
+    model: "pdf-inspector-v1",
+    aliases: &[FIRECRAWL_PDF_ALIAS],
+    adapter: FIRECRAWL_PDF_ADAPTER,
+    runner_name: FIRECRAWL_PDF_RUNNER_NAME,
+    executable_name: Some(FIRECRAWL_PDF_EXECUTABLE),
+    license: ExtensionLicenseMetadata {
+        target: FIRECRAWL_PDF_TARGET,
+        kind: ExtensionKind::Document,
+        source_url: "https://github.com/firecrawl/pdf-inspector",
+        license: "MIT",
+        distribution: ExtensionDistribution::ExternalBinary,
+        bundled: false,
+        network_default: false,
+        notice: "Firecrawl PDF Inspector is MIT and runs only as a local external pdf2md binary; it is not linked or vendored into the core.",
+    },
+};
+
+const DOCUMENT_CATALOG: [DocumentCatalogEntry; 2] = [PDF_ADAPTER_ENTRY, FIRECRAWL_PDF_ENTRY];
 
 #[derive(Debug)]
 pub struct DocumentSession {
     entry: &'static DocumentCatalogEntry,
     runner_path: PathBuf,
+    executable_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -107,6 +169,8 @@ struct BundleManifest {
     target: String,
     adapter: String,
     runner_rel: String,
+    executable_path: Option<PathBuf>,
+    executable_sha256: Option<String>,
 }
 
 #[derive(Debug)]
@@ -285,7 +349,11 @@ pub fn start_active_session() -> Result<DocumentSession> {
     ensure_ready_bundle(entry, &bundle)?;
     let manifest = load_bundle_manifest(&bundle_manifest_path(&bundle))?;
     let runner_path = bundle_child_path(&bundle, &manifest.runner_rel, "runner_rel")?;
-    Ok(DocumentSession { entry, runner_path })
+    Ok(DocumentSession {
+        entry,
+        runner_path,
+        executable_path: manifest.executable_path,
+    })
 }
 
 pub fn supports_path(path: &Path) -> bool {
@@ -303,18 +371,21 @@ pub fn extract_with_session(session: &mut DocumentSession, path: &Path) -> Resul
             path.display()
         )));
     }
-    let output = Command::new(&session.runner_path)
+    let mut command = Command::new(&session.runner_path);
+    command
         .arg("--target")
         .arg(session.entry.target)
         .arg("--input")
-        .arg(path)
-        .output()
-        .map_err(|error| {
-            RedactError::Detection(format!(
-                "Failed to run document adapter '{}': {}",
-                session.entry.target, error
-            ))
-        })?;
+        .arg(path);
+    if let Some(executable_path) = session.executable_path.as_ref() {
+        command.arg("--executable").arg(executable_path);
+    }
+    let output = command.output().map_err(|error| {
+        RedactError::Detection(format!(
+            "Failed to run document adapter '{}': {}",
+            session.entry.target, error
+        ))
+    })?;
 
     if !output.status.success() {
         return Err(RedactError::Detection(format!(
@@ -373,6 +444,7 @@ fn install_target(entry: &'static DocumentCatalogEntry) -> Result<InstallOutcome
 
     let install_result = match entry.target {
         PDF_ADAPTER_TARGET => install_pdf_adapter_bundle(entry, &temp_bundle),
+        FIRECRAWL_PDF_TARGET => install_firecrawl_pdf_bundle(entry, &temp_bundle),
         _ => Err(RedactError::Usage(format!(
             "Unknown document adapter target '{}'.",
             entry.target
@@ -444,6 +516,53 @@ fn install_pdf_adapter_bundle(entry: &DocumentCatalogEntry, temp_bundle: &Path) 
             .join(entry.runner_name)
             .to_string_lossy()
             .into_owned(),
+        executable_path: None,
+        executable_sha256: None,
+    };
+    save_bundle_manifest(temp_bundle, &manifest)?;
+    Ok(())
+}
+
+fn install_firecrawl_pdf_bundle(entry: &DocumentCatalogEntry, temp_bundle: &Path) -> Result<()> {
+    let executable_name = entry.executable_name.ok_or_else(|| {
+        RedactError::Config(format!(
+            "Document adapter '{}' is missing executable metadata.",
+            entry.target
+        ))
+    })?;
+    let executable = find_executable_in_path(executable_name)?;
+    let executable_sha256 = crate::provider::sha256_hex_of_path(&executable)?;
+    let runner_dir = temp_bundle.join(DOCUMENT_RUNNER_DIR);
+    fs::create_dir_all(&runner_dir).map_err(|error| {
+        RedactError::Config(format!(
+            "Cannot create runner directory '{}': {}",
+            runner_dir.display(),
+            error
+        ))
+    })?;
+    let runner_path = runner_dir.join(entry.runner_name);
+    io_safe::atomic_write(&runner_path, FIRECRAWL_PDF_RUNNER_SCRIPT)?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&runner_path, fs::Permissions::from_mode(0o755)).map_err(|error| {
+            RedactError::Config(format!(
+                "Cannot mark document runner executable '{}': {}",
+                runner_path.display(),
+                error
+            ))
+        })?;
+    }
+
+    let manifest = BundleManifest {
+        schema_version: DOCUMENT_SCHEMA_VERSION,
+        target: entry.target.to_string(),
+        adapter: entry.adapter.to_string(),
+        runner_rel: Path::new(DOCUMENT_RUNNER_DIR)
+            .join(entry.runner_name)
+            .to_string_lossy()
+            .into_owned(),
+        executable_path: Some(executable),
+        executable_sha256: Some(executable_sha256),
     };
     save_bundle_manifest(temp_bundle, &manifest)?;
     Ok(())
@@ -481,13 +600,13 @@ fn verify_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path) -> Re
             error
         ))
     })?;
-    if runner_bytes != PDF_ADAPTER_RUNNER_SCRIPT.as_bytes() {
+    if runner_bytes != runner_script_for_entry(entry).as_bytes() {
         return Err(RedactError::Config(format!(
             "Document adapter '{}' failed integrity verification.",
             entry.target
         )));
     }
-    ensure_document_runtime_available()?;
+    ensure_document_runtime_available(entry, &manifest)?;
     save_verified_state(
         bundle_root,
         &VerifiedState {
@@ -527,7 +646,7 @@ fn ensure_ready_bundle(entry: &'static DocumentCatalogEntry, bundle_root: &Path)
             runner_path.display()
         )));
     }
-    ensure_document_runtime_available()?;
+    ensure_document_runtime_available(entry, &manifest)?;
     Ok(())
 }
 
@@ -553,19 +672,112 @@ fn bundle_child_path(bundle_root: &Path, rel: &str, field: &str) -> Result<PathB
     Ok(bundle_root.join(rel_path))
 }
 
-fn ensure_document_runtime_available() -> Result<()> {
-    ensure_command_available("pdftotext", &["-v"], "Install poppler, then run")?;
-    ensure_command_available("python3", &["--version"], "Install Python 3, then run")
+fn runner_script_for_entry(entry: &DocumentCatalogEntry) -> &'static str {
+    match entry.target {
+        PDF_ADAPTER_TARGET => PDF_ADAPTER_RUNNER_SCRIPT,
+        FIRECRAWL_PDF_TARGET => FIRECRAWL_PDF_RUNNER_SCRIPT,
+        _ => "",
+    }
 }
 
-fn ensure_command_available(command: &str, args: &[&str], guidance: &str) -> Result<()> {
+fn ensure_document_runtime_available(
+    entry: &DocumentCatalogEntry,
+    manifest: &BundleManifest,
+) -> Result<()> {
+    ensure_command_available(
+        entry,
+        "python3",
+        &["--version"],
+        "Install Python 3, then run",
+    )?;
+    match entry.target {
+        PDF_ADAPTER_TARGET => {
+            ensure_command_available(entry, "pdftotext", &["-v"], "Install poppler, then run")
+        }
+        FIRECRAWL_PDF_TARGET => verify_manifest_executable(entry, manifest),
+        _ => Err(RedactError::Config(format!(
+            "Document adapter '{}' has no runtime verifier.",
+            entry.target
+        ))),
+    }
+}
+
+fn ensure_command_available(
+    entry: &DocumentCatalogEntry,
+    command: &str,
+    args: &[&str],
+    guidance: &str,
+) -> Result<()> {
     match Command::new(command).args(args).output() {
         Ok(_) => Ok(()),
         Err(error) => Err(RedactError::Usage(format!(
             "Document adapter '{}' requires '{}' in PATH.\n{}:\n  redacted document verify {}\nUnderlying error: {}",
-            PDF_ADAPTER_TARGET, command, guidance, PDF_ADAPTER_ALIAS, error
+            entry.target,
+            command,
+            guidance,
+            entry.aliases.first().copied().unwrap_or(entry.target),
+            error
         ))),
     }
+}
+
+fn verify_manifest_executable(
+    entry: &DocumentCatalogEntry,
+    manifest: &BundleManifest,
+) -> Result<()> {
+    let executable_path = manifest.executable_path.as_ref().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Document adapter '{}' is missing executable path metadata.",
+            entry.target
+        ))
+    })?;
+    let expected_sha256 = manifest.executable_sha256.as_ref().ok_or_else(|| {
+        RedactError::Config(format!(
+            "Document adapter '{}' is missing executable hash metadata.",
+            entry.target
+        ))
+    })?;
+    if !executable_path.is_file() {
+        return Err(RedactError::Config(format!(
+            "Document adapter '{}' executable '{}' is missing.",
+            entry.target,
+            executable_path.display()
+        )));
+    }
+    let actual_sha256 = crate::provider::sha256_hex_of_path(executable_path)?;
+    if &actual_sha256 != expected_sha256 {
+        return Err(RedactError::Config(format!(
+            "Document adapter '{}' failed executable integrity verification.",
+            entry.target
+        )));
+    }
+    Ok(())
+}
+
+fn find_executable_in_path(name: &str) -> Result<PathBuf> {
+    let path_value = env::var_os("PATH").ok_or_else(|| {
+        RedactError::Usage(format!(
+            "Cannot find '{}' because PATH is not set.\nInstall Firecrawl PDF Inspector's pdf2md CLI, then run:\n  redacted document install firecrawl-pdf",
+            name
+        ))
+    })?;
+    for directory in env::split_paths(&path_value) {
+        let candidate = directory.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let candidate = directory.join(format!("{}.exe", name));
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(RedactError::Usage(format!(
+        "Cannot find '{}' in PATH.\nInstall Firecrawl PDF Inspector's pdf2md CLI, then run:\n  redacted document install firecrawl-pdf",
+        name
+    )))
 }
 
 fn format_document_list() -> Result<String> {
@@ -686,6 +898,12 @@ fn save_bundle_manifest(bundle_root: &Path, manifest: &BundleManifest) -> Result
     content.push_str(&format!("target={}\n", manifest.target));
     content.push_str(&format!("adapter={}\n", manifest.adapter));
     content.push_str(&format!("runner_rel={}\n", manifest.runner_rel));
+    if let Some(executable_path) = manifest.executable_path.as_ref() {
+        content.push_str(&format!("executable_path={}\n", executable_path.display()));
+    }
+    if let Some(executable_sha256) = manifest.executable_sha256.as_ref() {
+        content.push_str(&format!("executable_sha256={}\n", executable_sha256));
+    }
     io_safe::atomic_write(&path, &content)?;
     Ok(())
 }
@@ -699,6 +917,8 @@ fn load_bundle_manifest(path: &Path) -> Result<BundleManifest> {
         target: app_paths::parse_required_value(&values, "target", path, "document")?,
         adapter: app_paths::parse_required_value(&values, "adapter", path, "document")?,
         runner_rel: app_paths::parse_required_value(&values, "runner_rel", path, "document")?,
+        executable_path: values.get("executable_path").map(PathBuf::from),
+        executable_sha256: values.get("executable_sha256").cloned(),
     })
 }
 

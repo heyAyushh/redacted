@@ -51,13 +51,13 @@ redacted document list
 | `openai/privacy-filter-v1-mlx` | provider | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) | Apache-2.0 | downloaded-artifact | no | yes |
 | `trufflehog/secrets-v1` | detector | [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) | AGPL-3.0 | external-binary | no | no |
 | `poppler/pdftotext-v1` | document | [Poppler pdftotext](https://poppler.freedesktop.org/) | GPL-2.0-or-later | external-binary | no | no |
+| `firecrawl/pdf-inspector-v1` | document | [Firecrawl PDF Inspector](https://github.com/firecrawl/pdf-inspector) | MIT | external-binary | no | no |
 
-## Reserved Extension Names
+## Naming Notes
 
-Firecrawl PDF Inspector should use a separate future target such as
-`firecrawl/pdf-inspector-v1`. Do not use `pdf-inspector` for the Poppler
-adapter; `pdf` is the human alias for the currently active PDF document type,
-and the exact target names the selected adapter implementation.
+`pdf` is the short human alias for the default PDF document adapter. Firecrawl
+PDF Inspector uses `firecrawl-pdf` as the alias and `firecrawl/pdf-inspector-v1`
+as the exact target, so the upstream name is not squatted by the Poppler adapter.
 
 ## Contribution Checklist
 

@@ -117,6 +117,13 @@ cargo run -- detector list
 cargo run -- document list
 ```
 
+With local document extraction binaries installed:
+
+```bash
+cargo run -- document enable pdf
+cargo run -- document enable firecrawl-pdf
+```
+
 Install/use flows for non-MIT or unknown-license extensions must print a notice.
 The full policy and contribution checklist are in
 [`extension-licenses.md`](extension-licenses.md).
