@@ -26,6 +26,8 @@ use external_detector::{ExternalDetectorDirectoryScan, ExternalDetectorSession};
 use policy::{FindingAction, FindingDecision};
 use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -423,6 +425,24 @@ fn read_scannable_text(
     })
 }
 
+fn external_detector_scan_candidate(path: &Path, config: &Config) -> bool {
+    if config.document_adapter && document::supports_path(path) {
+        return true;
+    }
+    if matches!(config.binary, BinaryMode::BestEffort) {
+        return true;
+    }
+    !file_looks_binary(path).unwrap_or(false)
+}
+
+fn file_looks_binary(path: &Path) -> std::io::Result<bool> {
+    const BINARY_SAMPLE_SIZE: usize = 8192;
+    let mut file = fs::File::open(path)?;
+    let mut sample = [0_u8; BINARY_SAMPLE_SIZE];
+    let bytes_read = file.read(&mut sample)?;
+    Ok(io_safe::is_binary(&sample[..bytes_read]))
+}
+
 fn document_output_path(output_dir: &str, relative: &Path) -> PathBuf {
     let mut path = Path::new(output_dir).join(relative);
     let current_name = path
@@ -594,7 +614,9 @@ fn process_directory(
     let external_scan_paths: Vec<PathBuf> = entries
         .iter()
         .filter_map(|entry| match entry {
-            traverse::FileEntry::Eligible { path, .. } => Some(path.clone()),
+            traverse::FileEntry::Eligible { path, .. } => {
+                external_detector_scan_candidate(path, config).then(|| path.clone())
+            }
             traverse::FileEntry::Skipped { .. } => None,
         })
         .collect();

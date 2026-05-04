@@ -98,6 +98,7 @@ pub struct ExternalDetectorSession {
 #[derive(Debug, Clone)]
 pub struct ExternalDetectorDirectoryScan {
     secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>>,
+    unscoped_secrets: Vec<ExternalDetectorSecret>,
 }
 
 #[derive(Debug, Clone)]
@@ -316,23 +317,30 @@ pub fn detect_directory_with_session(
     paths: &[PathBuf],
 ) -> Result<ExternalDetectorDirectoryScan> {
     let mut secrets_by_path: HashMap<PathBuf, Vec<ExternalDetectorSecret>> = HashMap::new();
+    let mut unscoped_secrets = Vec::new();
     if paths.is_empty() {
-        return Ok(ExternalDetectorDirectoryScan { secrets_by_path });
+        return Ok(ExternalDetectorDirectoryScan {
+            secrets_by_path,
+            unscoped_secrets,
+        });
     }
     for runtime in &session.runtimes {
         match runtime.entry.adapter {
             TRUFFLEHOG_ADAPTER => {
                 for path_chunk in trufflehog_path_chunks(paths) {
                     for secret in run_trufflehog(runtime.entry, &runtime.manifest, path_chunk)? {
+                        let detector_secret = ExternalDetectorSecret {
+                            detector_name: runtime.entry.detector_name,
+                            category: runtime.entry.category,
+                            raw: secret.raw,
+                        };
                         if let Some(path) = secret.path {
                             secrets_by_path
                                 .entry(normalize_reported_path(scan_root, &path))
                                 .or_default()
-                                .push(ExternalDetectorSecret {
-                                    detector_name: runtime.entry.detector_name,
-                                    category: runtime.entry.category,
-                                    raw: secret.raw,
-                                });
+                                .push(detector_secret);
+                        } else {
+                            unscoped_secrets.push(detector_secret);
                         }
                     }
                 }
@@ -345,7 +353,10 @@ pub fn detect_directory_with_session(
             }
         }
     }
-    Ok(ExternalDetectorDirectoryScan { secrets_by_path })
+    Ok(ExternalDetectorDirectoryScan {
+        secrets_by_path,
+        unscoped_secrets,
+    })
 }
 
 pub fn detect_path_from_directory_scan(
@@ -353,17 +364,13 @@ pub fn detect_path_from_directory_scan(
     path: &Path,
     text: &str,
 ) -> Vec<Finding> {
-    scan.secrets_by_path
-        .get(path)
-        .map(|secrets| {
-            secrets
-                .iter()
-                .flat_map(|secret| {
-                    find_secret_spans(text, &secret.raw, secret.detector_name, secret.category)
-                })
-                .collect()
+    let path_secrets = scan.secrets_by_path.get(path).into_iter().flatten();
+    path_secrets
+        .chain(scan.unscoped_secrets.iter())
+        .flat_map(|secret| {
+            find_secret_spans(text, &secret.raw, secret.detector_name, secret.category)
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 fn detector_allowed(
@@ -393,22 +400,22 @@ fn run_trufflehog(
     paths: &[impl AsRef<Path>],
 ) -> Result<Vec<TruffleHogSecret>> {
     let mut command = Command::new(&manifest.executable_path);
-    command.arg("filesystem");
-    for path in paths {
-        command.arg(path.as_ref());
-    }
-    let output = command
+    command
+        .arg("filesystem")
         .arg("--json")
         .arg("--no-verification")
         .arg("--no-update")
         .arg("--no-color")
-        .output()
-        .map_err(|error| {
-            RedactError::Detection(format!(
-                "Failed to run external detector '{}': {}",
-                entry.target, error
-            ))
-        })?;
+        .arg("--");
+    for path in paths {
+        command.arg(path.as_ref());
+    }
+    let output = command.output().map_err(|error| {
+        RedactError::Detection(format!(
+            "Failed to run external detector '{}': {}",
+            entry.target, error
+        ))
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

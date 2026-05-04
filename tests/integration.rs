@@ -153,7 +153,7 @@ fn add_fake_trufflehog_to_env(
     fs::write(
         &tool_path,
         format!(
-            "#!/usr/bin/env python3\nimport json\nimport os\nimport pathlib\nimport sys\ninvoke_log = os.environ.get('FAKE_TRUFFLEHOG_INVOKE_LOG')\nif invoke_log:\n    with pathlib.Path(invoke_log).open('a') as handle:\n        handle.write('run\\n')\nif os.environ.get('FAKE_TRUFFLEHOG_FAIL') == '1':\n    sys.stderr.write('fake trufflehog failure\\n')\n    sys.exit(2)\nmarker = os.environ.get('FAKE_TRUFFLEHOG_MUTATE_MARKER')\nif marker and not pathlib.Path(marker).exists():\n    pathlib.Path(marker).write_text('mutated')\n    pathlib.Path(sys.argv[0]).write_text(pathlib.Path(sys.argv[0]).read_text() + '\\n# mutated')\nargs = sys.argv[1:]\nscan_paths = []\nif 'filesystem' in args:\n    index = args.index('filesystem') + 1\n    while index < len(args) and not args[index].startswith('--'):\n        scan_paths.append(pathlib.Path(args[index]))\n        index += 1\nfiles = []\nfor scan_path in scan_paths:\n    if scan_path.is_dir():\n        files.extend(sorted(path for path in scan_path.rglob('*') if path.is_file()))\n    else:\n        files.append(scan_path)\nif not files:\n    files.append(pathlib.Path('unknown'))\nfor file_path in files:\n    sys.stdout.write(json.dumps({{\"SourceMetadata\":{{\"Data\":{{\"Filesystem\":{{\"file\":str(file_path)}}}}}},\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}) + \"\\n\")\n",
+            "#!/usr/bin/env python3\nimport json\nimport os\nimport pathlib\nimport sys\ninvoke_log = os.environ.get('FAKE_TRUFFLEHOG_INVOKE_LOG')\nif invoke_log:\n    with pathlib.Path(invoke_log).open('a') as handle:\n        handle.write('run\\n')\nargs_log = os.environ.get('FAKE_TRUFFLEHOG_ARGS_LOG')\nif args_log:\n    with pathlib.Path(args_log).open('a') as handle:\n        handle.write(json.dumps(sys.argv[1:]) + '\\n')\nif os.environ.get('FAKE_TRUFFLEHOG_FAIL') == '1':\n    sys.stderr.write('fake trufflehog failure\\n')\n    sys.exit(2)\nmarker = os.environ.get('FAKE_TRUFFLEHOG_MUTATE_MARKER')\nif marker and not pathlib.Path(marker).exists():\n    pathlib.Path(marker).write_text('mutated')\n    pathlib.Path(sys.argv[0]).write_text(pathlib.Path(sys.argv[0]).read_text() + '\\n# mutated')\nargs = sys.argv[1:]\nscan_paths = []\nif 'filesystem' in args:\n    index = args.index('filesystem') + 1\n    if '--' in args[index:]:\n        index = args.index('--', index) + 1\n        scan_paths = [pathlib.Path(arg) for arg in args[index:]]\n    else:\n        while index < len(args) and not args[index].startswith('--'):\n            scan_paths.append(pathlib.Path(args[index]))\n            index += 1\nfiles = []\nfor scan_path in scan_paths:\n    if scan_path.is_dir():\n        files.extend(sorted(path for path in scan_path.rglob('*') if path.is_file()))\n    else:\n        files.append(scan_path)\nif not files:\n    files.append(pathlib.Path('unknown'))\nomit_path = os.environ.get('FAKE_TRUFFLEHOG_OMIT_PATH') == '1'\nfor file_path in files:\n    payload = {{\"DetectorName\":\"FakeDetector\",\"Raw\":{raw:?},\"Verified\":False}}\n    if not omit_path:\n        payload[\"SourceMetadata\"] = {{\"Data\":{{\"Filesystem\":{{\"file\":str(file_path)}}}}}}\n    sys.stdout.write(json.dumps(payload) + \"\\n\")\n",
             raw = raw_secret
         ),
     )?;
@@ -1159,6 +1159,121 @@ fn external_detector_directory_does_not_rehash_executable_per_file() {
     assert!(stderr.contains("\"files_processed\": 2"));
     let invocations = fs::read_to_string(invoke_log_path).unwrap();
     assert_eq!(invocations.lines().count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_uses_unscoped_trufflehog_findings() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_unscoped_findings");
+    let raw_secret = "hog_secret_unscoped_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+    envs.push(("FAKE_TRUFFLEHOG_OMIT_PATH".into(), "1".into()));
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), format!("secret {}", raw_secret)).unwrap();
+    fs::write(input_dir.join("b.txt"), "plain text").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"a.txt\""));
+    assert!(stderr.contains("\"detector\": \"TRUFFLEHOG_SECRET\""));
+    assert!(stderr.contains("\"files_processed\": 2"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_passes_flags_before_paths() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_args_order");
+    let raw_secret = "hog_secret_args_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+    let args_log_path = data_root.join("trufflehog-args.log");
+    envs.push((
+        "FAKE_TRUFFLEHOG_ARGS_LOG".into(),
+        args_log_path.to_string_lossy().into_owned(),
+    ));
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), format!("secret {}", raw_secret)).unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--dry-run",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let args_log = fs::read_to_string(args_log_path).unwrap();
+    let json_flag = args_log.find("\"--json\"").unwrap();
+    let separator = args_log.find("\"--\"").unwrap();
+    let file_path = args_log.find("a.txt").unwrap();
+    assert!(json_flag < separator);
+    assert!(separator < file_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn external_detector_directory_skips_binary_candidates() {
+    let (config_root, data_root, mut envs) = isolated_state_env("detector_skip_binary_candidates");
+    let raw_secret = "hog_secret_binary_value_12345";
+    add_fake_trufflehog_to_env(&mut envs, config_root.parent().unwrap(), raw_secret).unwrap();
+    let args_log_path = data_root.join("trufflehog-args.log");
+    envs.push((
+        "FAKE_TRUFFLEHOG_ARGS_LOG".into(),
+        args_log_path.to_string_lossy().into_owned(),
+    ));
+
+    let input_dir = data_root.join("repo");
+    fs::create_dir_all(&input_dir).unwrap();
+    fs::write(input_dir.join("a.txt"), format!("secret {}", raw_secret)).unwrap();
+    fs::write(input_dir.join("blob.bin"), b"\0secret in binary").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "install", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let (_stdout, stderr, code) = run_with_env(&["detector", "use", "trufflehog"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (_stdout, stderr, code) = run_with_env(
+        &[
+            "--detectors",
+            "--input",
+            input_dir.to_str().unwrap(),
+            "--dry-run",
+            "--report-json",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stderr.contains("\"path\": \"blob.bin\""));
+    assert!(stderr.contains("\"status\": \"skipped\""));
+
+    let args_log = fs::read_to_string(args_log_path).unwrap();
+    assert!(args_log.contains("a.txt"));
+    assert!(!args_log.contains("blob.bin"));
 }
 
 #[cfg(unix)]
