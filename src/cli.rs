@@ -1,4 +1,5 @@
 use crate::errors::{RedactError, Result};
+use crate::text_utils::capitalize_first;
 use std::collections::HashSet;
 use std::env;
 
@@ -36,10 +37,81 @@ pub struct ExceptArgs {
     pub command: Option<ExceptSubcommand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderArgs {
+    pub help: Option<ProviderHelpTopic>,
+    pub command: Option<ProviderSubcommand>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentArgs {
+    pub help: Option<DocumentHelpTopic>,
+    pub command: Option<DocumentSubcommand>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArgs {
+    pub help: bool,
+    pub input: Option<String>,
+    pub iterations: usize,
+    pub privacy_filter: bool,
+    pub document_adapter: bool,
+    pub format: OutputFormat,
+}
+
 /// Parsed CLI arguments. All fields are explicit — no hidden state.
 #[derive(Debug, Clone)]
 pub struct CliArgs {
     pub except: Option<ExceptArgs>,
+    pub provider: Option<ProviderArgs>,
+    pub document: Option<DocumentArgs>,
+    pub benchmark: Option<BenchmarkArgs>,
     pub text: Option<String>,
     pub input: Option<String>,
     pub output: Option<String>,
@@ -65,6 +137,8 @@ pub struct CliArgs {
     pub include_hidden: bool,
     pub follow_symlinks: bool,
     pub threads: Option<usize>,
+    pub privacy_filter: bool,
+    pub document_adapter: bool,
     pub show_help: bool,
     pub show_version: bool,
     /// Tracks which flags were explicitly provided on the CLI,
@@ -76,6 +150,9 @@ impl Default for CliArgs {
     fn default() -> Self {
         Self {
             except: None,
+            provider: None,
+            document: None,
+            benchmark: None,
             text: None,
             input: None,
             output: None,
@@ -101,6 +178,8 @@ impl Default for CliArgs {
             include_hidden: false,
             follow_symlinks: false,
             threads: None,
+            privacy_filter: false,
+            document_adapter: false,
             show_help: false,
             show_version: false,
             explicit_flags: HashSet::new(),
@@ -117,10 +196,17 @@ pub fn print_help() {
 USAGE:
   redacted [OPTIONS]
   redacted except [--file <PATH>] <add|remove|list> [--detector <NAME> | --literal <VALUE>]
+  redacted provider <enable|install|use|current|list|verify|disable> [OPTIONS]
+  redacted document <enable|install|use|current|list|verify|disable> [OPTIONS]
+  redacted benchmark --input <PATH> [OPTIONS]
   echo "secret text" | redacted
   redacted --text "email me at user@example.com"
   redacted --input secrets.txt
   redacted --input logs/ --output cleaned/
+  redacted provider enable openai
+  redacted provider enable mlx
+  redacted document enable pdf-inspector
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter
 
 INPUT (resolved in this order):
   --text <TEXT>         Literal text to redact
@@ -148,6 +234,15 @@ DETECTORS:
   --except-file <PATH>   Load persisted retain rules from file
   --replacement <STRING>  Custom replacement (default: [REDACTED:<TYPE>])
 
+PRIVACY FILTER:
+  --privacy-filter      Run the active privacy-filter provider as an extra detection pass
+  redacted provider ... Manage install, activation, and verification for provider bundles
+                        Provider mode is optional and outside the hardened core scan path
+
+DOCUMENT ADAPTER:
+  --document-adapter    Use the active document adapter for supported non-text inputs (PDF)
+  redacted document ... Manage install, activation, and verification for document adapters
+
 TRAVERSAL:
   --recursive           Recurse into directories (default: on)
   --include-hidden      Process hidden files/dirs
@@ -162,6 +257,9 @@ MODES:
   --fail-on-find        Exit non-zero if any findings detected
   --summary             Print summary to stderr
   --config <PATH>       TOML configuration file
+
+BENCHMARK:
+  redacted benchmark    Run repeated dry-run scans and report timings
 
 OTHER:
   --threads <N>         Worker threads for directory mode
@@ -183,18 +281,255 @@ EXAMPLES:
   redacted --input repo/ --output repo-clean/ --report-json
   redacted --text "user@example.com" --retain-detector EMAIL
   redacted --text "ref PROJ-1234" --pattern PROJECT_ID=PROJ-\d+ --retain-detector PROJECT_ID
+  redacted --text "Alice was born on 1990-01-02" --privacy-filter
+  redacted provider enable openai
+  redacted document enable pdf-inspector
+  redacted --input report.pdf --document-adapter
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
+  redacted provider list
+  redacted document list
   redacted except add --detector EMAIL
   redacted except list"#,
         version = VERSION,
     );
 }
 
+pub fn print_provider_help(topic: ProviderHelpTopic) {
+    let text = match topic {
+        ProviderHelpTopic::Root => {
+            r#"redacted provider — manage privacy-filter providers.
+
+USAGE:
+  redacted provider enable <provider-or-target>
+  redacted provider install <provider-or-target>
+  redacted provider use <provider-or-target>
+  redacted provider current
+  redacted provider list
+  redacted provider verify [<provider-or-target> | --all]
+  redacted provider disable
+
+OVERVIEW:
+  Provider aliases are human-friendly shortcuts such as `openai` and `mlx`.
+  Exact targets are persistent IDs such as `openai/privacy-filter-v1`
+  and `openai/privacy-filter-v1-mlx`.
+  Aliases always resolve to a pinned exact target and the command prints
+  the resolved target before it changes local state.
+  Provider mode is optional and lower-trust than the hardened Rust-only core scan path.
+  `openai` is the supported OPF token-span path.
+  `mlx` is an experimental local MLX runtime for the converted OpenAI Privacy Filter.
+
+EXAMPLES:
+  redacted provider enable openai
+  redacted provider enable mlx
+  redacted provider install openai/privacy-filter-v1
+  redacted provider install openai/privacy-filter-v1-mlx
+  redacted provider use openai
+  redacted provider current
+  redacted provider list
+  redacted provider verify --all
+  redacted provider disable
+
+NEXT STEP:
+  Once a provider is enabled, run scans with:
+    redacted --privacy-filter --input logs/"#
+        }
+        ProviderHelpTopic::Enable => {
+            r#"redacted provider enable — install if needed, verify, and activate a provider.
+
+USAGE:
+  redacted provider enable <provider-or-target>
+
+EXAMPLES:
+  redacted provider enable openai
+  redacted provider enable openai/privacy-filter-v1
+  redacted provider enable mlx
+  redacted provider enable openai/privacy-filter-v1-mlx
+
+BEHAVIOR:
+  - Resolves aliases such as `openai` and `mlx` to pinned exact targets.
+  - Installs the bundle if it is missing.
+  - Verifies the installed bundle if no verification stamp is present.
+  - Marks the resolved exact target as active.
+  - OpenAI Privacy Filter is a token-span detector, not a generative extractor."#
+        }
+        ProviderHelpTopic::Install => {
+            r#"redacted provider install — download and verify a provider bundle without activating it.
+
+USAGE:
+  redacted provider install <provider-or-target>
+
+EXAMPLES:
+  redacted provider install openai
+  redacted provider install openai/privacy-filter-v1
+  redacted provider install mlx
+  redacted provider install openai/privacy-filter-v1-mlx"#
+        }
+        ProviderHelpTopic::Use => {
+            r#"redacted provider use — switch the active provider to an installed, verified bundle.
+
+USAGE:
+  redacted provider use <provider-or-target>
+
+EXAMPLES:
+  redacted provider use openai
+  redacted provider use openai/privacy-filter-v1
+  redacted provider use mlx
+  redacted provider use openai/privacy-filter-v1-mlx
+
+NOTE:
+  `use` does not download anything. Use `enable` for easy onboarding or
+  `install` first if you want a separate install step."#
+        }
+        ProviderHelpTopic::Current => {
+            r#"redacted provider current — show the active provider target.
+
+USAGE:
+  redacted provider current"#
+        }
+        ProviderHelpTopic::List => {
+            r#"redacted provider list — show aliases, exact targets, and local install state.
+
+USAGE:
+  redacted provider list"#
+        }
+        ProviderHelpTopic::Verify => {
+            r#"redacted provider verify — re-hash installed provider artifacts.
+
+USAGE:
+  redacted provider verify [<provider-or-target> | --all]
+
+EXAMPLES:
+  redacted provider verify
+  redacted provider verify openai
+  redacted provider verify openai/privacy-filter-v1
+  redacted provider verify mlx
+  redacted provider verify openai/privacy-filter-v1-mlx
+  redacted provider verify --all
+
+DEFAULT:
+  Without a selector or `--all`, the active provider is verified."#
+        }
+        ProviderHelpTopic::Disable => {
+            r#"redacted provider disable — clear the active provider selection.
+
+USAGE:
+  redacted provider disable"#
+        }
+    };
+    eprintln!("{}", text);
+}
+
 pub fn print_version() {
     eprintln!("redacted {}", VERSION);
 }
 
+pub fn print_document_help(topic: DocumentHelpTopic) {
+    let text = match topic {
+        DocumentHelpTopic::Root => {
+            r#"redacted document — manage optional document adapters.
+
+USAGE:
+  redacted document enable <adapter-or-target>
+  redacted document install <adapter-or-target>
+  redacted document use <adapter-or-target>
+  redacted document current
+  redacted document list
+  redacted document verify [<adapter-or-target> | --all]
+  redacted document disable
+
+OVERVIEW:
+  Document adapters are optional and off by default.
+  They convert supported non-text files into text before scanning.
+  Current built-in alias:
+    pdf-inspector -> pdf-inspector/local-v1
+
+EXAMPLES:
+  redacted document enable pdf-inspector
+  redacted document use pdf-inspector/local-v1
+  redacted document list
+  redacted --input report.pdf --document-adapter"#
+        }
+        DocumentHelpTopic::Enable => {
+            r#"redacted document enable — install if needed, verify, and activate an adapter.
+
+USAGE:
+  redacted document enable <adapter-or-target>
+
+EXAMPLES:
+  redacted document enable pdf-inspector
+  redacted document enable pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Install => {
+            r#"redacted document install — install and verify an adapter without activating it.
+
+USAGE:
+  redacted document install <adapter-or-target>
+
+EXAMPLES:
+  redacted document install pdf-inspector
+  redacted document install pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Use => {
+            r#"redacted document use — switch active adapter to an installed, verified target.
+
+USAGE:
+  redacted document use <adapter-or-target>
+
+EXAMPLES:
+  redacted document use pdf-inspector
+  redacted document use pdf-inspector/local-v1"#
+        }
+        DocumentHelpTopic::Current => {
+            r#"redacted document current — show the active document adapter target.
+
+USAGE:
+  redacted document current"#
+        }
+        DocumentHelpTopic::List => {
+            r#"redacted document list — show aliases, exact targets, and local install state.
+
+USAGE:
+  redacted document list"#
+        }
+        DocumentHelpTopic::Verify => {
+            r#"redacted document verify — verify installed adapter assets and runtime prerequisites.
+
+USAGE:
+  redacted document verify [<adapter-or-target> | --all]
+
+EXAMPLES:
+  redacted document verify
+  redacted document verify pdf-inspector
+  redacted document verify pdf-inspector/local-v1
+  redacted document verify --all"#
+        }
+        DocumentHelpTopic::Disable => {
+            r#"redacted document disable — clear the active document adapter target.
+
+USAGE:
+  redacted document disable"#
+        }
+    };
+    eprintln!("{}", text);
+}
+
+pub fn print_benchmark_help() {
+    eprintln!(
+        r#"redacted benchmark — run repeated dry-run scans and report timings.
+
+USAGE:
+  redacted benchmark --input <PATH> [--iterations <N>] [--privacy-filter] [--document-adapter] [--format text|json]
+
+EXAMPLES:
+  redacted benchmark --input logs/
+  redacted benchmark --input logs/ --iterations 5 --privacy-filter
+  redacted benchmark --input report.pdf --document-adapter
+  redacted benchmark --input corpus/ --iterations 10 --privacy-filter --document-adapter --format json"#
+    );
+}
+
 /// Hand-rolled argument parser. No external dependencies.
-/// Fails fast with actionable error messages per cli-for-agent skill.
+/// Fails fast with actionable error messages.
 pub fn parse_args() -> Result<CliArgs> {
     let raw: Vec<String> = env::args().collect();
     parse_args_from(&raw[1..])
@@ -203,6 +538,15 @@ pub fn parse_args() -> Result<CliArgs> {
 pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
     if matches!(args.first().map(String::as_str), Some("except")) {
         return parse_except_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("provider")) {
+        return parse_provider_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("document")) {
+        return parse_document_args(&args[1..]);
+    }
+    if matches!(args.first().map(String::as_str), Some("benchmark")) {
+        return parse_benchmark_args(&args[1..]);
     }
 
     let mut cli = CliArgs::default();
@@ -348,6 +692,8 @@ pub fn parse_args_from(args: &[String]) -> Result<CliArgs> {
                     ))
                 })?);
             }
+            "--privacy-filter" => cli.privacy_filter = true,
+            "--document-adapter" => cli.document_adapter = true,
             other => {
                 return Err(RedactError::Usage(format!(
                     "Unknown argument '{}'\n  redacted --help",
@@ -408,6 +754,353 @@ fn parse_except_args(args: &[String]) -> Result<CliArgs> {
 
     cli.except = Some(except);
     Ok(cli)
+}
+
+fn parse_provider_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let provider = if args.is_empty() {
+        ProviderArgs {
+            help: Some(ProviderHelpTopic::Root),
+            command: None,
+        }
+    } else {
+        parse_provider_command(args)?
+    };
+    cli.provider = Some(provider);
+    Ok(cli)
+}
+
+fn parse_document_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let document = if args.is_empty() {
+        DocumentArgs {
+            help: Some(DocumentHelpTopic::Root),
+            command: None,
+        }
+    } else {
+        parse_document_command(args)?
+    };
+    cli.document = Some(document);
+    Ok(cli)
+}
+
+fn parse_benchmark_args(args: &[String]) -> Result<CliArgs> {
+    let mut cli = CliArgs::default();
+    let mut benchmark = BenchmarkArgs {
+        help: false,
+        input: None,
+        iterations: 3,
+        privacy_filter: false,
+        document_adapter: false,
+        format: OutputFormat::Text,
+    };
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                benchmark.help = true;
+                break;
+            }
+            "--input" => {
+                i += 1;
+                benchmark.input = Some(require_value(args, i, "--input")?);
+            }
+            "--iterations" => {
+                i += 1;
+                let value = require_value(args, i, "--iterations")?;
+                benchmark.iterations = value.parse::<usize>().map_err(|_| {
+                    RedactError::Usage(format!(
+                        "Invalid iterations '{}'. Expected a positive integer.\n  redacted benchmark --input logs/ --iterations 5",
+                        value
+                    ))
+                })?;
+                if benchmark.iterations == 0 {
+                    return Err(RedactError::Usage(
+                        "Benchmark iterations must be at least 1.\n  redacted benchmark --input logs/ --iterations 1".into(),
+                    ));
+                }
+            }
+            "--privacy-filter" => benchmark.privacy_filter = true,
+            "--document-adapter" => benchmark.document_adapter = true,
+            "--format" => {
+                i += 1;
+                let value = require_value(args, i, "--format")?;
+                benchmark.format = match value.as_str() {
+                    "text" => OutputFormat::Text,
+                    "json" => OutputFormat::Json,
+                    other => {
+                        return Err(RedactError::Usage(format!(
+                            "Unknown benchmark format '{}'. Expected: text, json\n  redacted benchmark --input logs/ --format text",
+                            other
+                        )));
+                    }
+                };
+            }
+            other => {
+                return Err(RedactError::Usage(format!(
+                    "Unknown benchmark argument '{}'\n  redacted benchmark --help",
+                    other
+                )));
+            }
+        }
+        i += 1;
+    }
+
+    if !benchmark.help && benchmark.input.is_none() {
+        return Err(RedactError::Usage(
+            "Benchmark requires --input <PATH>.\n  redacted benchmark --input logs/ --iterations 3"
+                .into(),
+        ));
+    }
+
+    cli.benchmark = Some(benchmark);
+    Ok(cli)
+}
+
+fn parse_provider_command(args: &[String]) -> Result<ProviderArgs> {
+    let parsed = parse_managed_command(args, &PROVIDER_COMMAND_SPEC)?;
+    Ok(ProviderArgs {
+        help: parsed.help.map(provider_help_topic_from_managed),
+        command: parsed.command.map(provider_subcommand_from_managed),
+    })
+}
+
+fn parse_document_command(args: &[String]) -> Result<DocumentArgs> {
+    let parsed = parse_managed_command(args, &DOCUMENT_COMMAND_SPEC)?;
+    Ok(DocumentArgs {
+        help: parsed.help.map(document_help_topic_from_managed),
+        command: parsed.command.map(document_subcommand_from_managed),
+    })
+}
+
+struct ManagedCommandSpec {
+    family: &'static str,
+    selector_name: &'static str,
+    example_selector: &'static str,
+}
+
+const PROVIDER_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
+    family: "provider",
+    selector_name: "provider-or-target",
+    example_selector: "openai",
+};
+
+const DOCUMENT_COMMAND_SPEC: ManagedCommandSpec = ManagedCommandSpec {
+    family: "document",
+    selector_name: "adapter-or-target",
+    example_selector: "pdf-inspector",
+};
+
+enum ManagedHelpTopic {
+    Root,
+    Enable,
+    Install,
+    Use,
+    Current,
+    List,
+    Verify,
+    Disable,
+}
+
+enum ManagedSubcommand {
+    Enable { selector: String },
+    Install { selector: String },
+    Use { selector: String },
+    Current,
+    List,
+    Verify { selector: Option<String>, all: bool },
+    Disable,
+}
+
+struct ManagedArgs {
+    help: Option<ManagedHelpTopic>,
+    command: Option<ManagedSubcommand>,
+}
+
+fn parse_managed_command(args: &[String], spec: &ManagedCommandSpec) -> Result<ManagedArgs> {
+    let first = args[0].as_str();
+    if first == "--help" || first == "-h" {
+        return Ok(ManagedArgs {
+            help: Some(ManagedHelpTopic::Root),
+            command: None,
+        });
+    }
+
+    let topic = managed_topic_from_name(first, spec)?;
+    let has_help_flag = args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--help" || arg == "-h");
+    if has_help_flag {
+        return Ok(ManagedArgs {
+            help: Some(topic),
+            command: None,
+        });
+    }
+
+    let command = match first {
+        "enable" => ManagedSubcommand::Enable {
+            selector: parse_managed_selector(args, "enable", spec)?,
+        },
+        "install" => ManagedSubcommand::Install {
+            selector: parse_managed_selector(args, "install", spec)?,
+        },
+        "use" => ManagedSubcommand::Use {
+            selector: parse_managed_selector(args, "use", spec)?,
+        },
+        "current" => {
+            reject_extra_args(args, 1, spec.family, "current")?;
+            ManagedSubcommand::Current
+        }
+        "list" => {
+            reject_extra_args(args, 1, spec.family, "list")?;
+            ManagedSubcommand::List
+        }
+        "verify" => parse_managed_verify(args, spec)?,
+        "disable" => {
+            reject_extra_args(args, 1, spec.family, "disable")?;
+            ManagedSubcommand::Disable
+        }
+        other => {
+            return Err(RedactError::Usage(format!(
+                "Unknown {} command '{}'\n  redacted {} --help",
+                spec.family, other, spec.family
+            )));
+        }
+    };
+
+    Ok(ManagedArgs {
+        help: None,
+        command: Some(command),
+    })
+}
+
+fn parse_managed_verify(args: &[String], spec: &ManagedCommandSpec) -> Result<ManagedSubcommand> {
+    let mut selector: Option<String> = None;
+    let mut all = false;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--all" => all = true,
+            value => {
+                if selector.is_some() || all {
+                    let display_family = capitalize_first(spec.family);
+                    return Err(RedactError::Usage(format!(
+                        "{} verify accepts one selector or --all.\n  redacted {} verify {}\n  redacted {} verify --all",
+                        display_family, spec.family, spec.example_selector, spec.family
+                    )));
+                }
+                selector = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    Ok(ManagedSubcommand::Verify { selector, all })
+}
+
+fn managed_topic_from_name(name: &str, spec: &ManagedCommandSpec) -> Result<ManagedHelpTopic> {
+    match name {
+        "enable" => Ok(ManagedHelpTopic::Enable),
+        "install" => Ok(ManagedHelpTopic::Install),
+        "use" => Ok(ManagedHelpTopic::Use),
+        "current" => Ok(ManagedHelpTopic::Current),
+        "list" => Ok(ManagedHelpTopic::List),
+        "verify" => Ok(ManagedHelpTopic::Verify),
+        "disable" => Ok(ManagedHelpTopic::Disable),
+        other => Err(RedactError::Usage(format!(
+            "Unknown {} command '{}'\n  redacted {} --help",
+            spec.family, other, spec.family
+        ))),
+    }
+}
+
+fn parse_managed_selector(
+    args: &[String],
+    command: &str,
+    spec: &ManagedCommandSpec,
+) -> Result<String> {
+    if args.len() != 2 {
+        let display_family = capitalize_first(spec.family);
+        return Err(RedactError::Usage(format!(
+            "{} command '{}' requires <{}>.\n  redacted {} {} {}",
+            display_family,
+            command,
+            spec.selector_name,
+            spec.family,
+            command,
+            spec.example_selector
+        )));
+    }
+    Ok(args[1].clone())
+}
+
+fn provider_help_topic_from_managed(topic: ManagedHelpTopic) -> ProviderHelpTopic {
+    match topic {
+        ManagedHelpTopic::Root => ProviderHelpTopic::Root,
+        ManagedHelpTopic::Enable => ProviderHelpTopic::Enable,
+        ManagedHelpTopic::Install => ProviderHelpTopic::Install,
+        ManagedHelpTopic::Use => ProviderHelpTopic::Use,
+        ManagedHelpTopic::Current => ProviderHelpTopic::Current,
+        ManagedHelpTopic::List => ProviderHelpTopic::List,
+        ManagedHelpTopic::Verify => ProviderHelpTopic::Verify,
+        ManagedHelpTopic::Disable => ProviderHelpTopic::Disable,
+    }
+}
+
+fn document_help_topic_from_managed(topic: ManagedHelpTopic) -> DocumentHelpTopic {
+    match topic {
+        ManagedHelpTopic::Root => DocumentHelpTopic::Root,
+        ManagedHelpTopic::Enable => DocumentHelpTopic::Enable,
+        ManagedHelpTopic::Install => DocumentHelpTopic::Install,
+        ManagedHelpTopic::Use => DocumentHelpTopic::Use,
+        ManagedHelpTopic::Current => DocumentHelpTopic::Current,
+        ManagedHelpTopic::List => DocumentHelpTopic::List,
+        ManagedHelpTopic::Verify => DocumentHelpTopic::Verify,
+        ManagedHelpTopic::Disable => DocumentHelpTopic::Disable,
+    }
+}
+
+fn provider_subcommand_from_managed(command: ManagedSubcommand) -> ProviderSubcommand {
+    match command {
+        ManagedSubcommand::Enable { selector } => ProviderSubcommand::Enable { selector },
+        ManagedSubcommand::Install { selector } => ProviderSubcommand::Install { selector },
+        ManagedSubcommand::Use { selector } => ProviderSubcommand::Use { selector },
+        ManagedSubcommand::Current => ProviderSubcommand::Current,
+        ManagedSubcommand::List => ProviderSubcommand::List,
+        ManagedSubcommand::Verify { selector, all } => ProviderSubcommand::Verify { selector, all },
+        ManagedSubcommand::Disable => ProviderSubcommand::Disable,
+    }
+}
+
+fn document_subcommand_from_managed(command: ManagedSubcommand) -> DocumentSubcommand {
+    match command {
+        ManagedSubcommand::Enable { selector } => DocumentSubcommand::Enable { selector },
+        ManagedSubcommand::Install { selector } => DocumentSubcommand::Install { selector },
+        ManagedSubcommand::Use { selector } => DocumentSubcommand::Use { selector },
+        ManagedSubcommand::Current => DocumentSubcommand::Current,
+        ManagedSubcommand::List => DocumentSubcommand::List,
+        ManagedSubcommand::Verify { selector, all } => DocumentSubcommand::Verify { selector, all },
+        ManagedSubcommand::Disable => DocumentSubcommand::Disable,
+    }
+}
+
+fn reject_extra_args(
+    args: &[String],
+    allowed_len: usize,
+    family: &str,
+    command: &str,
+) -> Result<()> {
+    if args.len() > allowed_len {
+        let display_family = capitalize_first(family);
+        return Err(RedactError::Usage(format!(
+            "{} command '{}' does not accept extra arguments.\n  redacted {} {}",
+            display_family, command, family, command
+        )));
+    }
+    Ok(())
 }
 
 fn parse_except_selector(args: &[String], i: &mut usize) -> Result<ExceptRuleSelector> {
@@ -543,6 +1236,167 @@ mod tests {
     }
 
     #[test]
+    fn parse_provider_root_help() {
+        let cli = parse_args_from(&args(&["provider"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: Some(ProviderHelpTopic::Root),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_enable_alias() {
+        let cli = parse_args_from(&args(&["provider", "enable", "openai"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: None,
+                command: Some(ProviderSubcommand::Enable {
+                    selector: "openai".into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_rejects_extra_arguments() {
+        let error =
+            parse_args_from(&args(&["provider", "enable", "openai", "--extra"])).unwrap_err();
+        assert!(error.to_string().contains("requires <provider-or-target>"));
+    }
+
+    #[test]
+    fn parse_provider_verify_all() {
+        let cli = parse_args_from(&args(&["provider", "verify", "--all"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: None,
+                command: Some(ProviderSubcommand::Verify {
+                    selector: None,
+                    all: true,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_provider_subcommand_help() {
+        let cli = parse_args_from(&args(&["provider", "use", "--help"])).unwrap();
+        assert_eq!(
+            cli.provider,
+            Some(ProviderArgs {
+                help: Some(ProviderHelpTopic::Use),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_privacy_filter_flag() {
+        let cli = parse_args_from(&args(&["--text", "hello", "--privacy-filter"])).unwrap();
+        assert!(cli.privacy_filter);
+    }
+
+    #[test]
+    fn parse_document_root_help() {
+        let cli = parse_args_from(&args(&["document"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: Some(DocumentHelpTopic::Root),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_enable_alias() {
+        let cli = parse_args_from(&args(&["document", "enable", "pdf-inspector"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: None,
+                command: Some(DocumentSubcommand::Enable {
+                    selector: "pdf-inspector".into(),
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_verify_all() {
+        let cli = parse_args_from(&args(&["document", "verify", "--all"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: None,
+                command: Some(DocumentSubcommand::Verify {
+                    selector: None,
+                    all: true,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_current_rejects_extra_arguments_with_document_help() {
+        let error = parse_args_from(&args(&["document", "current", "--extra"])).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Document command 'current'"));
+        assert!(message.contains("redacted document current"));
+        assert!(!message.contains("redacted provider current"));
+    }
+
+    #[test]
+    fn parse_document_subcommand_help() {
+        let cli = parse_args_from(&args(&["document", "use", "--help"])).unwrap();
+        assert_eq!(
+            cli.document,
+            Some(DocumentArgs {
+                help: Some(DocumentHelpTopic::Use),
+                command: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_benchmark_command() {
+        let cli = parse_args_from(&args(&[
+            "benchmark",
+            "--input",
+            "logs",
+            "--iterations",
+            "5",
+            "--privacy-filter",
+            "--document-adapter",
+            "--format",
+            "json",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.benchmark,
+            Some(BenchmarkArgs {
+                help: false,
+                input: Some("logs".into()),
+                iterations: 5,
+                privacy_filter: true,
+                document_adapter: true,
+                format: OutputFormat::Json,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_document_adapter_flag() {
+        let cli = parse_args_from(&args(&["--input", "doc.pdf", "--document-adapter"])).unwrap();
+        assert!(cli.document_adapter);
+    }
+
+    #[test]
     fn parse_binary_mode() {
         let cli = parse_args_from(&args(&["--binary", "best-effort"])).unwrap();
         assert_eq!(cli.binary, BinaryMode::BestEffort);
@@ -568,5 +1422,6 @@ mod tests {
         assert!(!cli.include_hidden);
         assert_eq!(cli.binary, BinaryMode::Skip);
         assert_eq!(cli.max_file_size, 25 * 1024 * 1024);
+        assert!(!cli.privacy_filter);
     }
 }

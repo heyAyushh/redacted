@@ -1,10 +1,16 @@
+pub mod app_paths;
+pub mod benchmark;
 pub mod cli;
 pub mod config;
 pub mod detector;
+pub mod document;
 pub mod errors;
 pub mod except;
 pub mod io_safe;
+pub mod json;
 pub mod policy;
+pub mod provider;
 pub mod redact;
 pub mod report;
+pub mod text_utils;
 pub mod traverse;

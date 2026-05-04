@@ -1,51 +1,94 @@
 # redacted
 
+[![CI](https://github.com/heyAyushh/redacted/actions/workflows/ci.yml/badge.svg)](https://github.com/heyAyushh/redacted/actions/workflows/ci.yml)
+
+![redacted banner](assets/readme-banner.png)
+
 **Production-grade CLI for redacting secrets and PII from text and files.**
 
-Zero external dependencies. Offline. Safe by default.
+Fast local redaction for logs, prompts, configs, and files. The default scan
+path is a single Rust binary with no crates.io dependencies, no network calls,
+and no model downloads.
+
+---
+
+## Install
+
+```bash
+cargo install --git https://github.com/heyAyushh/redacted --locked
+redacted --version
+```
+
+That installs the Rust CLI only. Optional provider models are never downloaded
+by install, build, tests, or normal scans.
+
+---
+
+## Try It
+
+```bash
+redacted --text "email jane@example.com password=correct-horse-battery-staple"
+# → email [REDACTED:EMAIL] [REDACTED:PASSWORD]
+```
+
+```bash
+echo "AWS key: AKIAIOSFODNN7EXAMPLE" | redacted
+# → AWS key: [REDACTED:AWS_KEY]
+```
+
+```bash
+redacted --input secrets.log --output clean.log
+redacted --input logs/ --output cleaned/ --summary
+```
+
+Use it in CI:
+
+```bash
+redacted --input . --fail-on-find --dry-run
+```
+
+---
+
+## Optional Local Privacy Filter
+
+`redacted` can add a second local detection pass using an installed provider
+bundle. This is off by default and separate from the hardened Rust-only scan
+path.
+
+```bash
+# One-time setup: downloads, hash-verifies, and activates the pinned local model
+redacted provider enable openai
+
+# Scan with the extra local provider pass
+redacted --privacy-filter --text "Jane Doe emailed jane@example.com from 411 111th St."
+```
+
+Provider scans use the local installed bundle. They do not call the OpenAI API.
+The first run can be slower because the local model has to load.
+
+Apple Silicon users can try the experimental MLX runtime for the same
+[OpenAI Privacy Filter model](https://huggingface.co/openai/privacy-filter/tree/main/original)
+through the pinned
+[mlx-community/openai-privacy-filter-4bit conversion](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0):
+
+```bash
+redacted provider enable mlx
+redacted --privacy-filter --input logs/
+```
 
 ---
 
 ## Key Features
 
-- **Zero dependencies** — uses only the Rust standard library; no supply-chain risk.
-- **Fully offline** — never phones home, no network access required.
+- **Zero dependencies in the core binary** — uses only the Rust standard library; no crates.io supply-chain risk in the default scan path.
+- **Offline by default** — built-in scans never phone home or download anything.
 - **Safe by default** — skips binary files, ignores hidden dirs, refuses to follow symlinks, caps file size at 25 MiB.
 - **Atomic writes** — output is written to a temp file then renamed, so partial writes never corrupt data.
 - **Purpose-built scanners** — every detector is a hand-written, O(n), non-backtracking scanner. No regex engine, no ReDoS risk.
 - **CI-friendly** — `--fail-on-find` exits non-zero when secrets are detected; `--dry-run` previews without modifying files.
 - **Structured output** — `--format json` and `--report-json` produce machine-readable reports with masked samples (secrets are never leaked in reports).
 - **Extensible** — add custom patterns via `--pattern NAME=REGEX` or a TOML config file.
-
----
-
-## Extensibility Guidance
-
-- Prefer **detectors** for new first-class scanning logic. A detector is native to `redacted`: it scans text, emits findings, and participates in the built-in reporting/redaction pipeline.
-- Reserve **bridges/adapters** for rare external integrations where `redacted` needs to wrap another engine or protocol.
-- If you are borrowing ideas from tools like TruffleHog, implement them as native detectors in this repository rather than invoking the external tool at runtime.
-- If you are extending the product for normal use cases, contributors should build **detectors** rather than adapters.
-
----
-
-## Installation
-
-```bash
-# Clone and build
-git clone <repo-url>
-cd redacted
-cargo build --release
-
-# The binary is at:
-./target/release/redacted
-```
-
-Or build in debug mode for development:
-
-```bash
-cargo build
-cargo run -- --help
-```
+- **Optional privacy-filter pass** — add a second local detection pass from an installed provider bundle with `--privacy-filter`.
 
 ---
 
@@ -90,6 +133,27 @@ redacted --text "user@a.com at /var/log/app.log from 10.0.0.1"
 
 ---
 
+## Optional Extras
+
+```bash
+# Enable the pinned OpenAI Privacy Filter bundle once
+redacted provider enable openai
+
+# Run the extra provider-backed pass
+redacted --input logs/ --output cleaned/ --summary --privacy-filter
+
+# Enable the PDF document adapter once
+redacted document enable pdf-inspector
+
+# Scan a PDF through the document adapter path
+redacted --input report.pdf --document-adapter
+
+# Run a repeatable benchmark
+redacted benchmark --input logs/ --iterations 5 --privacy-filter --document-adapter
+```
+
+---
+
 ## Detectors
 
 When extending `redacted`, prefer building **detectors** that plug into the native scan pipeline. Reserve terms like **bridge** or **adapter** for rare cases where `redacted` wraps an external engine and translates its results back into native findings.
@@ -130,6 +194,173 @@ Add your own patterns via CLI or config:
 redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 # → ref [REDACTED:PROJECT_ID]
 ```
+
+---
+
+## Privacy Filter Providers
+
+`redacted` can run one extra optional detection pass from a local provider bundle.
+This is **off by default** and it does **not** replace the native detectors.
+
+The important trust boundary is:
+
+- The default Rust-only scan path keeps the original lightweight, offline-by-default hardening story.
+- Provider-backed privacy filtering is an **optional adapter mode** outside that hardened core path.
+- `redacted` still owns masking, reporting, retain rules, except rules, and file writes.
+
+Current built-in aliases and targets:
+
+| Alias | Exact target | Status | What it runs |
+|-------|--------------|--------|--------------|
+| `openai` | `openai/privacy-filter-v1` | Supported | Local OPF runner around [OpenAI Privacy Filter original artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original) |
+| `mlx` | `openai/privacy-filter-v1-mlx` | Experimental | Apple MLX runtime for the pinned [mlx-community/openai-privacy-filter-4bit conversion](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) |
+
+### What It Does
+
+When you add `--privacy-filter`, `redacted`:
+
+1. Runs the normal built-in detectors.
+2. Runs the active local provider bundle once more over the same text.
+3. Merges both sets of findings.
+4. Applies the usual retain, except, report, and redact logic once.
+
+So the feature is an **extra pass**, not a second output mode and not a provider-owned redaction pipeline.
+
+### Human Onboarding
+
+```bash
+# Install, verify, and activate the pinned OpenAI provider bundle
+redacted provider enable openai
+
+# Or, on Apple Silicon, use the experimental MLX runtime for the same filter
+redacted provider enable mlx
+
+# Scan with the extra pass enabled
+redacted --privacy-filter --input logs/
+```
+
+The command prints the exact resolved target, for example:
+
+```text
+resolved target: openai/privacy-filter-v1
+```
+
+For MLX, the resolved target is:
+
+```text
+resolved target: openai/privacy-filter-v1-mlx
+```
+
+### Switching Later
+
+```bash
+redacted provider list
+redacted provider current
+redacted provider use openai
+redacted provider disable
+```
+
+### Important Behavior
+
+- `--privacy-filter` never downloads anything during a scan.
+- `--privacy-filter` uses the active locally installed provider bundle; it does not call the OpenAI API during scans.
+- The first provider-backed scan can be slower because the local model and runner need to load.
+- Provider downloads happen only through `redacted provider install ...` or `redacted provider enable ...`.
+- If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
+- The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
+- Python runtime dependencies for provider bundles are installed from checked-in hash-locked requirements files.
+- `openai/privacy-filter-v1` is the supported token-span runtime using the [OpenAI Privacy Filter OPF source archive](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635) and [OpenAI Privacy Filter model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original).
+- `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) conversion for local MLX inference.
+- Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
+
+### Provider Sources
+
+The `openai` alias resolves to `openai/privacy-filter-v1`, which downloads:
+
+- [OpenAI Privacy Filter OPF source archive](https://github.com/openai/privacy-filter/archive/2e8c95b9771eec29ef61012f6e5e836f9bad7635.tar.gz), pinned to commit `2e8c95b9771eec29ef61012f6e5e836f9bad7635`
+- [OpenAI Privacy Filter original model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original)
+- [OpenAI Privacy Filter original/model.safetensors](https://huggingface.co/openai/privacy-filter/resolve/main/original/model.safetensors?download=1)
+
+The main OpenAI model file is pinned by verification metadata:
+
+```text
+size:   2,798,984,088 bytes
+sha256: 9c262cbe68a0c8a50590a648ef8341a2b7d3be1fa11dfb79893fe0b03ce57b5c
+```
+
+The `mlx` alias resolves to `openai/privacy-filter-v1-mlx`, which downloads
+from [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0)
+at this exact revision:
+
+```text
+8b784df48dd38a36b757f50c73d23e5bd38f3db0
+```
+
+The main MLX model file is
+[model.safetensors](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/blob/8b784df48dd38a36b757f50c73d23e5bd38f3db0/model.safetensors),
+pinned to:
+
+```text
+size:   790,435,150 bytes
+sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
+```
+
+All provider artifacts are checked by size and SHA-256 before the provider is
+marked verified.
+Provider Python dependencies are installed with pip `--require-hashes` from
+checked-in lock files under `provider-locks/`.
+
+### TruffleHog Detectors
+
+`redacted` does not bundle
+[TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) detectors
+today. TruffleHog is a broad Go-based credential scanner under AGPL-3.0 with a
+large detector tree and many verification-oriented integrations. `redacted` keeps
+the default path as a small MIT-licensed Rust binary with no crates.io
+dependencies and no network calls.
+
+The practical split is:
+
+- Use `redacted` when you want fast local redaction, masked reports, and safe file rewrites.
+- Use TruffleHog when you want broad leaked-credential discovery and service-backed verification.
+- If this project adds TruffleHog-style coverage later, it should be an explicit optional adapter/provider boundary, not code imported into the hardened core.
+
+---
+
+## Document Adapters
+
+`redacted` can also run an optional document extraction step for supported non-text files.
+
+- Feature flag: `--document-adapter`
+- Current built-in alias: `pdf-inspector`
+- Exact target: `pdf-inspector/local-v1`
+- Runtime: local `pdftotext`
+
+When `--document-adapter` is enabled and the input is a supported document type (`.pdf` in v1), `redacted` extracts text first and then applies the same detector, merge, retain/except, reporting, and redaction pipeline.
+
+Setup flow:
+
+```bash
+redacted document enable pdf-inspector
+redacted --input report.pdf --document-adapter
+```
+
+Switching and lifecycle:
+
+```bash
+redacted document list
+redacted document current
+redacted document use pdf-inspector/local-v1
+redacted document verify --all
+redacted document disable
+```
+
+Important behavior:
+
+- Document adapters are off by default.
+- Scans do not auto-install adapters.
+- `--document-adapter` fails fast if no active adapter is configured.
+- In-place rewrite is blocked for document-adapter extracted files; use `--output` instead.
 
 ---
 
@@ -180,6 +411,8 @@ redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 | `--fail-on-find` | Exit non-zero if any findings detected |
 | `--summary` | Print summary to stderr |
 | `--config <PATH>` | TOML configuration file |
+| `--privacy-filter` | Run the active privacy-filter provider as one extra detection pass |
+| `--document-adapter` | Run the active document adapter for supported non-text inputs |
 
 ### Other
 
@@ -188,6 +421,64 @@ redacted --text "ref PROJ-42" --pattern "PROJECT_ID=PROJ-\\d+"
 | `--threads <N>` | Worker threads for directory mode |
 | `--help` | Show help |
 | `--version` | Show version |
+
+### Provider Commands
+
+```bash
+redacted provider enable <provider-or-target>
+redacted provider install <provider-or-target>
+redacted provider use <provider-or-target>
+redacted provider current
+redacted provider list
+redacted provider verify [<provider-or-target> | --all]
+redacted provider disable
+```
+
+Examples:
+
+```bash
+redacted provider enable openai
+redacted provider enable mlx
+redacted provider install openai/privacy-filter-v1
+redacted provider install openai/privacy-filter-v1-mlx
+redacted provider use openai
+redacted provider verify --all
+```
+
+### Document Commands
+
+```bash
+redacted document enable <adapter-or-target>
+redacted document install <adapter-or-target>
+redacted document use <adapter-or-target>
+redacted document current
+redacted document list
+redacted document verify [<adapter-or-target> | --all]
+redacted document disable
+```
+
+Examples:
+
+```bash
+redacted document enable pdf-inspector
+redacted document install pdf-inspector/local-v1
+redacted document use pdf-inspector
+redacted document verify --all
+```
+
+### Benchmark Command
+
+```bash
+redacted benchmark --input <PATH> [--iterations <N>] [--privacy-filter] [--document-adapter] [--format text|json]
+```
+
+Examples:
+
+```bash
+redacted benchmark --input logs/
+redacted benchmark --input logs/ --iterations 10 --privacy-filter
+redacted benchmark --input report.pdf --document-adapter --format json
+```
 
 ---
 
@@ -231,13 +522,15 @@ CLI flags always take precedence over config file values.
 ## Security Model
 
 - **No secrets in output.** Reports use `masked_sample` (first ≤4 chars + `***`). Full matches are never logged, printed, or serialised.
-- **No external dependencies.** Zero supply-chain surface. The entire codebase is auditable.
+- **No external dependencies in the core binary.** The default scan path stays in the Rust standard library.
 - **No regex engine.** All pattern matching uses purpose-built, O(n), non-backtracking scanners — immune to ReDoS.
 - **No `unsafe` code.** Safe Rust throughout.
 - **Atomic file writes.** Output is written to a temp file (`0600` permissions) then atomically renamed.
 - **Symlink containment.** Symlink targets are canonicalised and rejected if they escape the input root directory.
 - **Binary detection.** Files containing null bytes or a high ratio of non-text bytes are skipped by default.
 - **Bounded custom patterns.** The built-in mini-regex engine caps quantifier repetitions at 4096.
+- **Explicit provider boundary.** Optional provider bundles are installed separately, selected explicitly, and only run when `--privacy-filter` is present.
+- **Explicit document-adapter boundary.** Optional document adapter bundles are installed separately, selected explicitly, and only run when `--document-adapter` is present.
 
 ---
 
@@ -255,6 +548,26 @@ See `docs/` for full documentation and `skills/redaction-cli/SKILL.md` for contr
 
 ---
 
+## Attribution
+
+`redacted` itself is MIT licensed and the core CLI uses only the Rust standard
+library. Optional provider and document-adapter setup commands may install or
+call third-party tools only after you explicitly enable them.
+
+| Area | Used for | Upstream |
+|------|----------|----------|
+| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | Rust standard library |
+| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
+| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
+| Provider Python environments | Local model loading and span detection inside provider bundles | Hash-locked packages listed in `provider-locks/` |
+| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | Local `pdftotext` from Poppler |
+
+Third-party models, tools, and Python packages keep their own upstream licenses.
+The checked-in lock files and provider catalog pin the exact downloaded artifacts
+with URLs, byte sizes, and SHA-256 hashes.
+
+---
+
 ## License
 
-[MIT](LICENSE)
+`redacted` is released under the [MIT License](LICENSE).

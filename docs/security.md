@@ -19,17 +19,76 @@ The `Cargo.toml` has **zero entries** under `[dependencies]`. The entire binary 
 
 There are no `unsafe` blocks anywhere in the codebase. All memory safety guarantees of the Rust compiler apply.
 
-### No Network Access
+### Offline Default Scan Path
 
-`redacted` never opens a network socket. It does not:
+The built-in `redacted` scan path never opens a network socket. It does not:
 
 - Phone home.
 - Check for updates.
 - Send telemetry.
 - Resolve DNS.
-- Make HTTP requests.
+- Make HTTP requests during normal scanning.
 
-Input is read from local files or stdin. Output is written to local files or stdout/stderr. That's it.
+Input is read from local files or stdin. Output is written to local files or
+stdout/stderr. That's it for the core binary path.
+
+### Explicit Provider Downloads
+
+The optional privacy-filter provider workflow is separate from the default
+guarantee above.
+
+- `redacted provider install ...` and `redacted provider enable ...` may
+  download an external provider bundle on purpose.
+- `redacted --privacy-filter ...` never downloads anything during a scan.
+- Provider bundles are installed under a dedicated app-data directory, verified
+  when installed, and selected explicitly before they can be used.
+- Provider Python dependencies are installed from checked-in hash-locked
+  requirements files, so pip package downloads must match pinned SHA-256 values.
+
+### Explicit Document Adapter Runtime
+
+The optional document adapter workflow is also separate from the default
+guarantee.
+
+- `redacted document install ...` and `redacted document enable ...` may set up
+  an external extraction runtime on purpose.
+- `redacted --document-adapter ...` never installs adapters during a scan.
+- Document adapter bundles are installed under a dedicated app-data directory,
+  verified when installed, and selected explicitly before use.
+
+### Provider Trust Boundary
+
+The provider subsystem is intentionally **not** part of the hardened core
+guarantee.
+
+- The Rust-only default path keeps the original minimal, offline-by-default
+  security posture.
+- Provider mode is an explicit adapter boundary with a larger runtime surface.
+- Privacy Filter adapters are optional lower-trust integrations, not equivalent
+  to the core detector pipeline.
+- `openai/privacy-filter-v1` is the supported OPF runtime; `openai/privacy-filter-v1-mlx`
+  is an experimental local MLX runtime for the converted OpenAI Privacy Filter model.
+- The MLX runtime downloads from a pinned Hugging Face revision and verifies
+  each artifact by byte size and SHA-256 before activation.
+- Provider manifests are constrained to in-bundle relative paths, and both the
+  adapter entry script and launched runner executable are integrity-checked.
+- Generative runtimes are not exposed as privacy-filter providers unless they
+  run a real detector with verified span output.
+- If a provider runtime crashes, hangs, or misclassifies text, that impacts the
+  optional provider pass, not the default core scan path.
+
+### Document Adapter Trust Boundary
+
+The document adapter subsystem is also **not** part of the hardened core
+guarantee.
+
+- The Rust-only default path remains the baseline hardened mode.
+- Document adapter mode is an explicit adapter boundary around external
+  extraction runtimes (for v1: local `pdftotext`).
+- If a document extraction runtime fails, that impacts the optional
+  `--document-adapter` flow, not the default scan path.
+- Even with document adapters enabled, `redacted` still owns detector logic,
+  policy application, masking, reporting, and output writes.
 
 ### No Regex Engine
 

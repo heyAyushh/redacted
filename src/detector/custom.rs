@@ -282,7 +282,7 @@ mod tests {
         let det = CustomDetector::new("NONDIGIT".into(), "[^0-9]+".into()).unwrap();
         let findings = det.detect("abc");
         // Matches at each start position: "abc" at 0, "bc" at 1, "c" at 2
-        assert!(findings.len() >= 1);
+        assert!(!findings.is_empty());
         assert_eq!(findings[0].start, 0);
         assert_eq!(findings[0].end, 3);
     }

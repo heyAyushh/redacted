@@ -135,15 +135,20 @@ impl DetectorRegistry {
         registry
     }
 
-    /// Run all detectors against text. Returns findings sorted by start position.
-    /// Merges overlapping findings, keeping the higher-confidence one.
-    pub fn detect_all(&self, text: &str) -> Vec<Finding> {
+    /// Run all detectors against text. Returns unmerged findings sorted by start position.
+    pub fn detect_all_unmerged(&self, text: &str) -> Vec<Finding> {
         let mut findings: Vec<Finding> = Vec::new();
         for detector in &self.detectors {
             findings.extend(detector.detect(text));
         }
         findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
-        merge_overlapping(findings)
+        findings
+    }
+
+    /// Run all detectors against text. Returns findings sorted by start position.
+    /// Merges overlapping findings, keeping the higher-confidence one.
+    pub fn detect_all(&self, text: &str) -> Vec<Finding> {
+        merge_findings(self.detect_all_unmerged(text))
     }
 
     #[allow(dead_code)]
@@ -152,30 +157,41 @@ impl DetectorRegistry {
     }
 }
 
-fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
+/// Merge findings after sorting them by `start ASC, end DESC`.
+/// Overlapping spans are unioned to avoid leaving partially exposed matches.
+pub fn merge_findings(mut findings: Vec<Finding>) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
     }
+    findings.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
     let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
     for f in findings {
         if let Some(last) = merged.last_mut() {
             if f.start < last.end {
                 // Overlapping: expand the span to cover both findings (union),
-                // and keep the higher-confidence detector name. This ensures
-                // no fragment of a matched secret is left exposed.
+                // and keep the strongest detector metadata for equal-confidence
+                // overlaps. Redaction uses the union span, but metadata tie-breaks
+                // use the original selected match length to avoid giving chained
+                // unions an unfair size advantage.
                 let union_start = std::cmp::min(last.start, f.start);
                 let union_end = std::cmp::max(last.end, f.end);
-                if f.confidence > last.confidence
+                let last_specificity = detector_specificity_rank(last.detector_name);
+                let new_specificity = detector_specificity_rank(f.detector_name);
+                let prefer_new_metadata = f.confidence > last.confidence
                     || (f.confidence == last.confidence
-                        && (f.end - f.start) > (last.end - last.start))
-                {
+                        && if new_specificity != last_specificity {
+                            new_specificity > last_specificity
+                        } else {
+                            f.matched_len > last.matched_len
+                        });
+                if prefer_new_metadata {
                     last.detector_name = f.detector_name;
                     last.category = f.category;
                     last.confidence = f.confidence;
+                    last.matched_len = f.matched_len;
                 }
                 last.start = union_start;
                 last.end = union_end;
-                last.matched_len = union_end - union_start;
                 continue;
             }
         }
@@ -184,9 +200,38 @@ fn merge_overlapping(findings: Vec<Finding>) -> Vec<Finding> {
     merged
 }
 
+fn detector_specificity_rank(detector_name: &str) -> u8 {
+    match detector_name {
+        "GENERIC_SECRET" => 0,
+        "HIGH_ENTROPY_SECRET" => 1,
+        "API_KEY" | "PASSWORD" | "SECRET" => 2,
+        _ => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FixedDetector {
+        name: &'static str,
+        category: &'static str,
+        findings: Vec<Finding>,
+    }
+
+    impl Detector for FixedDetector {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn category(&self) -> &'static str {
+            self.category
+        }
+
+        fn detect(&self, _text: &str) -> Vec<Finding> {
+            self.findings.clone()
+        }
+    }
 
     #[test]
     fn masked_sample_short() {
@@ -236,10 +281,38 @@ mod tests {
                 matched_len: 10,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "b");
         // Span must be the union: 0..15, not 5..15
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 15);
+    }
+
+    #[test]
+    fn merge_findings_sorts_unsorted_input() {
+        let findings = vec![
+            Finding {
+                detector_name: "SECOND",
+                category: "test",
+                start: 5,
+                end: 15,
+                confidence: Confidence::High,
+                matched_len: 10,
+            },
+            Finding {
+                detector_name: "FIRST",
+                category: "test",
+                start: 0,
+                end: 10,
+                confidence: Confidence::Medium,
+                matched_len: 10,
+            },
+        ];
+
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "SECOND");
         assert_eq!(merged[0].start, 0);
         assert_eq!(merged[0].end, 15);
     }
@@ -265,7 +338,7 @@ mod tests {
                 matched_len: 5,
             },
         ];
-        let merged = merge_overlapping(findings);
+        let merged = merge_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].detector_name, "narrow");
         // Must keep the wider span to avoid leaking the uncovered prefix/suffix
@@ -274,9 +347,215 @@ mod tests {
     }
 
     #[test]
+    fn merge_overlapping_equal_confidence_prefers_specific_detector_name() {
+        let findings = vec![
+            Finding {
+                detector_name: "HIGH_ENTROPY_SECRET",
+                category: "secret",
+                start: 0,
+                end: 40,
+                confidence: Confidence::Medium,
+                matched_len: 40,
+            },
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 7,
+                end: 40,
+                confidence: Confidence::Medium,
+                matched_len: 33,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "HIGH_ENTROPY_SECRET");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 40);
+    }
+
+    #[test]
+    fn merge_overlapping_equal_confidence_keeps_specific_secret_over_generic_submatch() {
+        let findings = vec![
+            Finding {
+                detector_name: "AWS_KEY",
+                category: "secret",
+                start: 0,
+                end: 20,
+                confidence: Confidence::High,
+                matched_len: 20,
+            },
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 5,
+                end: 18,
+                confidence: Confidence::High,
+                matched_len: 13,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "AWS_KEY");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 20);
+    }
+
+    #[test]
+    fn merge_overlapping_cross_category_still_prefers_longer_span() {
+        let findings = vec![
+            Finding {
+                detector_name: "GENERIC_SECRET",
+                category: "secret",
+                start: 0,
+                end: 8,
+                confidence: Confidence::Medium,
+                matched_len: 8,
+            },
+            Finding {
+                detector_name: "EMAIL",
+                category: "pii",
+                start: 2,
+                end: 20,
+                confidence: Confidence::Medium,
+                matched_len: 18,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "EMAIL");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 20);
+    }
+
+    #[test]
+    fn merge_overlapping_cross_category_prefers_specific_detector_metadata() {
+        let findings = vec![
+            Finding {
+                detector_name: "SECRET",
+                category: "secret",
+                start: 0,
+                end: 24,
+                confidence: Confidence::Medium,
+                matched_len: 24,
+            },
+            Finding {
+                detector_name: "EMAIL",
+                category: "pii",
+                start: 5,
+                end: 21,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "EMAIL");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 24);
+    }
+
+    #[test]
+    fn merge_overlapping_equal_confidence_partial_overlap_keeps_longer_detector_name() {
+        let findings = vec![
+            Finding {
+                detector_name: "FIRST",
+                category: "secret",
+                start: 0,
+                end: 12,
+                confidence: Confidence::Medium,
+                matched_len: 12,
+            },
+            Finding {
+                detector_name: "SECOND",
+                category: "secret",
+                start: 8,
+                end: 24,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "SECOND");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 24);
+    }
+
+    #[test]
+    fn merge_overlapping_chained_metadata_uses_original_match_lengths() {
+        let findings = vec![
+            Finding {
+                detector_name: "FIRST",
+                category: "pii",
+                start: 0,
+                end: 10,
+                confidence: Confidence::Medium,
+                matched_len: 10,
+            },
+            Finding {
+                detector_name: "SECOND",
+                category: "pii",
+                start: 8,
+                end: 20,
+                confidence: Confidence::Medium,
+                matched_len: 12,
+            },
+            Finding {
+                detector_name: "THIRD",
+                category: "pii",
+                start: 19,
+                end: 35,
+                confidence: Confidence::Medium,
+                matched_len: 16,
+            },
+        ];
+
+        let merged = merge_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].detector_name, "THIRD");
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 35);
+    }
+
+    #[test]
     fn detector_registry_allow_deny() {
         let registry = DetectorRegistry::build_default(&["EMAIL".to_string()], &[], &[]);
         let names = registry.detector_names();
         assert_eq!(names, vec!["EMAIL"]);
+    }
+
+    #[test]
+    fn detector_registry_can_return_unmerged_findings() {
+        let mut registry = DetectorRegistry::new();
+        registry.register(Box::new(FixedDetector {
+            name: "fixed",
+            category: "test",
+            findings: vec![
+                Finding {
+                    detector_name: "FIRST",
+                    category: "test",
+                    start: 0,
+                    end: 10,
+                    confidence: Confidence::Medium,
+                    matched_len: 10,
+                },
+                Finding {
+                    detector_name: "SECOND",
+                    category: "test",
+                    start: 5,
+                    end: 15,
+                    confidence: Confidence::Medium,
+                    matched_len: 10,
+                },
+            ],
+        }));
+
+        let unmerged = registry.detect_all_unmerged("0123456789012345");
+        assert_eq!(unmerged.len(), 2);
+
+        let merged = registry.detect_all("0123456789012345");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, 0);
+        assert_eq!(merged[0].end, 15);
     }
 }

@@ -56,6 +56,34 @@ To test with optimizations (useful for performance-related checks):
 cargo test --release
 ```
 
+### Provider Smoke Tests
+
+The regular test suite uses fake provider runners so it does not download OPF
+or MLX artifacts. Run these smoke tests when changing provider catalog entries,
+runner scripts, or install logic:
+
+```bash
+cargo run -- provider list
+cargo run -- provider verify --all
+```
+
+For the supported OPF path:
+
+```bash
+cargo run -- provider enable openai
+cargo run -- --privacy-filter --text "Jane Doe uses jane@example.com"
+```
+
+For the experimental MLX path on Apple Silicon with Python 3.10+:
+
+```bash
+cargo run -- provider enable mlx
+cargo run -- --privacy-filter --text "Jane Doe uses jane@example.com"
+```
+
+Provider setup may download large external artifacts. Normal scans with
+`--privacy-filter` must not download anything.
+
 ---
 
 ## Test Categories
@@ -77,6 +105,7 @@ Unit tests are defined in `#[cfg(test)] mod tests` blocks at the bottom of each 
 | `src/traverse.rs` | Directory traversal: hidden file skipping, hidden file inclusion, relative path preservation |
 | `src/report.rs` | JSON escaping, line number calculation, summary aggregation, JSON report generation |
 | `src/errors.rs` | Error display formatting, exit code assignment, I/O error conversion |
+| `src/provider.rs` | Provider alias resolution, bundle metadata, runner response parsing, virtualenv path repair |
 
 ### Integration Tests
 
@@ -94,6 +123,7 @@ Integration tests are in `tests/integration.rs`. They invoke the compiled `redac
 | **Edge cases** | `empty_text`, `unicode_text`, `long_line_no_crash`, `multiple_secrets_same_line`, `binary_file_skipped`, `private_key_block`, `bearer_token`, `password_assignment`, `reports_never_leak_full_secrets` |
 | **Config file** | `config_file_custom_pattern` |
 | **Exit codes** | `exit_code_0_success`, `exit_code_3_findings_with_fail` |
+| **Provider mode** | Provider help/current/list/use/enable flows, active-provider failures, fake runner JSON handling, provider spans merged with native findings, directory-mode runner reuse |
 
 ---
 

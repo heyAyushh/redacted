@@ -1,21 +1,29 @@
+mod app_paths;
+mod benchmark;
 mod cli;
 mod config;
 mod detector;
+mod document;
 mod errors;
 mod except;
 mod io_safe;
+mod json;
 mod policy;
+mod provider;
 mod redact;
 mod report;
+mod text_utils;
 mod traverse;
 
 use cli::{BinaryMode, OutputFormat};
 use config::Config;
 use detector::DetectorRegistry;
+use document::DocumentSession;
 use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
 use policy::{FindingAction, FindingDecision};
+use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 fn main() {
@@ -35,6 +43,15 @@ fn run() -> errors::Result<i32> {
     if let Some(ref except_args) = cli_args.except {
         return except::run_except_command(except_args);
     }
+    if let Some(ref provider_args) = cli_args.provider {
+        return provider::run_provider_command(provider_args);
+    }
+    if let Some(ref document_args) = cli_args.document {
+        return document::run_document_command(document_args);
+    }
+    if let Some(ref benchmark_args) = cli_args.benchmark {
+        return benchmark::run_benchmark_command(benchmark_args);
+    }
 
     if cli_args.show_help {
         cli::print_help();
@@ -46,6 +63,7 @@ fn run() -> errors::Result<i32> {
     }
 
     let config = Config::from_cli(&cli_args)?;
+    ensure_document_adapter_uses_input_path(&config)?;
     let except_rules =
         if let Some(path) = except::resolve_scan_except_path(config.except_file.as_deref())? {
             except::load_rules(&path)?
@@ -59,10 +77,17 @@ fn run() -> errors::Result<i32> {
         &config.deny_patterns,
         &config.patterns,
     );
-
     // Determine input source (priority: text > input > stdin)
     if let Some(ref text) = config.text {
-        return process_text(text, &config, &registry, &except_rules);
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
+        return process_text(
+            text,
+            &config,
+            &registry,
+            provider_session.as_mut(),
+            None,
+            &except_rules,
+        );
     }
 
     if let Some(ref input_path) = config.input {
@@ -74,10 +99,31 @@ fn run() -> errors::Result<i32> {
             )));
         }
 
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
+        let mut document_session = if config.document_adapter {
+            Some(document::start_active_session()?)
+        } else {
+            None
+        };
+
         if path.is_file() {
-            return process_single_file(path, &config, &registry, &except_rules);
+            return process_single_file(
+                path,
+                &config,
+                &registry,
+                provider_session.as_mut(),
+                document_session.as_mut(),
+                &except_rules,
+            );
         } else if path.is_dir() {
-            return process_directory(path, &config, &registry, &except_rules);
+            return process_directory(
+                path,
+                &config,
+                &registry,
+                provider_session.as_mut(),
+                document_session.as_mut(),
+                &except_rules,
+            );
         } else {
             return Err(RedactError::Usage(format!(
                 "Input '{}' is neither a file nor a directory.",
@@ -89,7 +135,15 @@ fn run() -> errors::Result<i32> {
     // stdin fallback
     if io_safe::stdin_is_piped() {
         let text = io_safe::read_stdin()?;
-        return process_text(&text, &config, &registry, &except_rules);
+        let mut provider_session = start_provider_session_if_enabled(&config)?;
+        return process_text(
+            &text,
+            &config,
+            &registry,
+            provider_session.as_mut(),
+            None,
+            &except_rules,
+        );
     }
 
     Err(RedactError::Usage(
@@ -102,21 +156,63 @@ fn run() -> errors::Result<i32> {
     ))
 }
 
+fn ensure_document_adapter_uses_input_path(config: &Config) -> errors::Result<()> {
+    if config.document_adapter && config.input.is_none() {
+        return Err(RedactError::Usage(
+            "Cannot use --document-adapter without --input <PATH>.\n\
+             Document adapters only process supported files and directories.\n  \
+             redacted --document-adapter --input <PDF_OR_DIR>"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn start_provider_session_if_enabled(config: &Config) -> errors::Result<Option<ProviderSession>> {
+    if config.privacy_filter {
+        Ok(Some(provider::start_active_session()?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn collect_findings(
+    text: &str,
+    config: &Config,
+    registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
+) -> errors::Result<Vec<detector::Finding>> {
+    let Some(session) = provider_session else {
+        return Ok(registry.detect_all(text));
+    };
+
+    let mut findings = registry.detect_all_unmerged(text);
+    let provider_findings = provider::detect_with_session(
+        session,
+        text,
+        &config.allow_patterns,
+        &config.deny_patterns,
+    )?;
+    findings.extend(provider_findings);
+    Ok(detector::merge_findings(findings))
+}
+
 fn decide_findings(
     text: &str,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
     except_rules: &[except::ExceptRule],
-) -> Vec<FindingDecision> {
-    policy::decide_findings(
+) -> errors::Result<Vec<FindingDecision>> {
+    Ok(policy::decide_findings(
         text,
-        registry.detect_all(text),
+        collect_findings(text, config, registry, provider_session)?,
         &config.retain_detectors,
         &config.retain_literals,
         &config.except_detectors,
         &config.except_literals,
         except_rules,
-    )
+    ))
 }
 
 fn redacted_findings(decisions: &[FindingDecision]) -> Vec<detector::Finding> {
@@ -146,9 +242,11 @@ fn process_text(
     text: &str,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
+    _document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
-    let decisions = decide_findings(text, config, registry, except_rules);
+    let decisions = decide_findings(text, config, registry, provider_session, except_rules)?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -226,14 +324,64 @@ fn read_file_with_mode(path: &Path, config: &Config) -> errors::Result<String> {
     }
 }
 
+#[derive(Debug)]
+struct LoadedText {
+    text: String,
+    from_document_adapter: bool,
+}
+
+fn read_scannable_text(
+    path: &Path,
+    config: &Config,
+    document_session: Option<&mut DocumentSession>,
+) -> errors::Result<LoadedText> {
+    if config.document_adapter && document::supports_path(path) {
+        let session = document_session.ok_or_else(|| {
+            RedactError::Detection(
+                "Document adapter flag is enabled but no active document session exists.".into(),
+            )
+        })?;
+        let text = document::extract_with_session(session, path)?;
+        return Ok(LoadedText {
+            text,
+            from_document_adapter: true,
+        });
+    }
+
+    Ok(LoadedText {
+        text: read_file_with_mode(path, config)?,
+        from_document_adapter: false,
+    })
+}
+
+fn document_output_path(output_dir: &str, relative: &Path) -> PathBuf {
+    let mut path = Path::new(output_dir).join(relative);
+    let current_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "document".into());
+    let output_name = format!("{}.redacted.txt", current_name);
+    path.set_file_name(output_name);
+    path
+}
+
 fn process_single_file(
     path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    provider_session: Option<&mut ProviderSession>,
+    document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
-    let text = match read_file_with_mode(path, config) {
-        Ok(t) => t,
+    if config.document_adapter && config.in_place && document::supports_path(path) {
+        return Err(RedactError::Usage(format!(
+            "Cannot use --in-place with --document-adapter for '{}'.\nUse --output <PATH> instead.",
+            path.display()
+        )));
+    }
+
+    let loaded = match read_scannable_text(path, config, document_session) {
+        Ok(value) => value,
         Err(e) => {
             // If binary and skip mode, report and succeed
             if matches!(config.binary, BinaryMode::Skip) {
@@ -255,8 +403,9 @@ fn process_single_file(
             return Err(e);
         }
     };
+    let text = loaded.text;
 
-    let decisions = decide_findings(&text, config, registry, except_rules);
+    let decisions = decide_findings(&text, config, registry, provider_session, except_rules)?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -325,6 +474,8 @@ fn process_directory(
     dir_path: &Path,
     config: &Config,
     registry: &DetectorRegistry,
+    mut provider_session: Option<&mut ProviderSession>,
+    mut document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
@@ -339,6 +490,13 @@ fn process_directory(
              redacted --input logs/ --output cleaned/\n  \
              redacted --input logs/ --in-place\n  \
              redacted --input logs/ --dry-run"
+                .into(),
+        ));
+    }
+    if config.document_adapter && config.in_place {
+        return Err(RedactError::Usage(
+            "Cannot use --in-place with --document-adapter for directory inputs.\n  \
+             Use --output <DIR> so extracted document text is written safely."
                 .into(),
         ));
     }
@@ -358,40 +516,75 @@ fn process_directory(
     for entry in entries {
         match entry {
             traverse::FileEntry::Eligible { path, relative } => {
-                let text = match read_file_with_mode(&path, config) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        let is_binary = msg.contains("binary");
-                        if is_binary && matches!(config.binary, BinaryMode::Skip) {
+                let loaded =
+                    match read_scannable_text(&path, config, document_session.as_deref_mut()) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            let msg = e.to_string();
+                            let is_binary = msg.contains("binary");
+                            if is_binary && matches!(config.binary, BinaryMode::Skip) {
+                                results.push(FileResult {
+                                    path: relative.display().to_string(),
+                                    findings_count: 0,
+                                    findings: vec![],
+                                    status: FileStatus::Skipped("Binary file".into()),
+                                });
+                                continue;
+                            }
+                            if is_binary && matches!(config.binary, BinaryMode::Fail) {
+                                results.push(FileResult {
+                                    path: relative.display().to_string(),
+                                    findings_count: 0,
+                                    findings: vec![],
+                                    status: FileStatus::Error("Binary file".into()),
+                                });
+                                continue;
+                            }
                             results.push(FileResult {
-                                path: path.display().to_string(),
+                                path: relative.display().to_string(),
                                 findings_count: 0,
                                 findings: vec![],
-                                status: FileStatus::Skipped("Binary file".into()),
+                                status: FileStatus::Error(msg),
                             });
                             continue;
                         }
-                        if is_binary && matches!(config.binary, BinaryMode::Fail) {
-                            results.push(FileResult {
-                                path: path.display().to_string(),
-                                findings_count: 0,
-                                findings: vec![],
-                                status: FileStatus::Error("Binary file".into()),
-                            });
-                            continue;
+                    };
+                let text = loaded.text;
+
+                let decisions = match decide_findings(
+                    &text,
+                    config,
+                    registry,
+                    provider_session.as_deref_mut(),
+                    except_rules,
+                ) {
+                    Ok(decisions) => decisions,
+                    Err(error) => {
+                        let mut message = error.to_string();
+                        if let Some(session) = provider_session.as_deref_mut() {
+                            match provider::restart_active_session(session) {
+                                Ok(()) => {
+                                    message.push_str(
+                                        " Provider session was restarted before continuing.",
+                                    );
+                                }
+                                Err(restart_error) => {
+                                    message.push_str(&format!(
+                                        " Provider session restart failed: {}",
+                                        restart_error
+                                    ));
+                                }
+                            }
                         }
                         results.push(FileResult {
-                            path: path.display().to_string(),
+                            path: relative.display().to_string(),
                             findings_count: 0,
                             findings: vec![],
-                            status: FileStatus::Error(msg),
+                            status: FileStatus::Error(message),
                         });
                         continue;
                     }
                 };
-
-                let decisions = decide_findings(&text, config, registry, except_rules);
                 let reportable = reportable_findings(&decisions);
                 let redactions = redacted_findings(&decisions);
                 let finding_count = reportable.len();
@@ -408,7 +601,7 @@ fn process_directory(
                     })
                     .collect();
 
-                // Write redacted output if not dry-run
+                let status = FileStatus::Processed;
                 if !config.dry_run {
                     if let Some(ref out_dir) = config.output {
                         let redacted = redact::apply_redactions(
@@ -416,7 +609,11 @@ fn process_directory(
                             &redactions,
                             config.replacement.as_deref(),
                         );
-                        let out_path = Path::new(out_dir).join(&relative);
+                        let out_path = if loaded.from_document_adapter {
+                            document_output_path(out_dir, &relative)
+                        } else {
+                            Path::new(out_dir).join(&relative)
+                        };
                         io_safe::atomic_write(&out_path, &redacted)?;
                     } else if config.in_place {
                         let redacted = redact::apply_redactions(
@@ -432,7 +629,7 @@ fn process_directory(
                     path: relative.display().to_string(),
                     findings_count: finding_count,
                     findings: reports,
-                    status: FileStatus::Processed,
+                    status,
                 });
             }
             traverse::FileEntry::Skipped { path, reason } => {
@@ -466,8 +663,11 @@ fn process_directory(
     // Always print minimal summary to stderr for directory mode
     if !config.summary && !config.dry_run && !config.report_json {
         eprintln!(
-            "Processed {} files, {} findings, {} skipped",
-            summary.files_processed, summary.total_findings, summary.files_skipped
+            "Processed {} files, {} findings, {} skipped, {} errored",
+            summary.files_processed,
+            summary.total_findings,
+            summary.files_skipped,
+            summary.files_errored
         );
     }
 

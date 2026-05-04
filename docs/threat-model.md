@@ -8,6 +8,10 @@ This document describes the threat model for `redacted`: which attack vectors ar
 
 `redacted` is a **local, offline text-processing tool**. It reads input from local files or stdin, processes it in memory, and writes output to local files or stdout. It has no network component, no server mode, and no persistence beyond the filesystem.
 
+This statement describes the default Rust-only scan path. Optional provider and
+document-adapter setup commands are explicit extension paths and have their own
+trust boundary.
+
 The primary use cases are:
 
 1. **Pre-commit scanning** — Detect secrets before they reach version control.
@@ -25,6 +29,7 @@ The primary use cases are:
 | Redacted output | The output files, which should contain no raw secret/PII values |
 | JSON reports | Structured reports, which contain masked (not full) samples |
 | The tool itself | The binary should not be subvertible to produce incorrect output |
+| Provider bundles | Optional external runtimes should be pinned, verified, and isolated from the default path |
 
 ---
 
@@ -34,6 +39,7 @@ The primary use cases are:
 |-------|-----------|------|
 | Malicious input author | Can craft input text/files processed by `redacted` | Cause DoS, bypass detection, crash the tool, or corrupt output |
 | Supply-chain attacker | Can compromise upstream dependencies | Inject malicious code into the binary |
+| Provider supply-chain attacker | Can compromise a provider artifact or Python package | Run malicious code inside the optional provider runtime |
 | Curious report reader | Has access to JSON reports | Extract full secret values from reports |
 | Symlink attacker | Can create symlinks on the filesystem | Read or modify files outside the intended scan scope |
 
@@ -67,6 +73,30 @@ The primary use cases are:
 **Mitigation:** Zero external dependencies. The `[dependencies]` section is empty. There is nothing to compromise.
 
 **Residual risk:** The Rust standard library and compiler are trusted. A compromised Rust toolchain could theoretically inject malicious code, but this is outside the scope of this project's threat model.
+
+### 3a. Optional Provider Supply-Chain Attack
+
+**Vector:** A compromised provider package, model file, or Python package runs
+inside an optional privacy-filter provider.
+
+**Mitigation:**
+- Provider mode is off by default.
+- Scans never install or download providers.
+- `redacted provider install ...` and `redacted provider enable ...` are
+  explicit setup commands.
+- Provider artifacts are pinned in the checked-in catalog and verified by byte
+  size and SHA-256 before use.
+- Provider Python dependencies are installed with hash-locked requirements, so
+  pip package downloads must match checked-in SHA-256 values.
+- The active provider is persisted as an exact target, not a floating alias.
+- Provider responses are limited to labels and byte spans; the Rust core still
+  owns final masking, reports, and file writes.
+
+**Residual risk:** Provider runtimes are external code with a larger runtime
+surface than the default Rust-only path. `openai/privacy-filter-v1` is the
+supported provider path. `openai/privacy-filter-v1-mlx` is experimental and
+uses Python, MLX packages, and the pinned MLX-converted model. Use provider mode
+only when the additional detection pass is worth that extra trust boundary.
 
 ### 4. Path Traversal via Symlinks
 
