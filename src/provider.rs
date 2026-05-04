@@ -1,6 +1,10 @@
 use crate::cli::{print_provider_help, ProviderArgs, ProviderHelpTopic, ProviderSubcommand};
 use crate::detector::{Confidence, Finding};
 use crate::errors::{RedactError, Result, EXIT_SUCCESS};
+use crate::extension::{
+    format_registry_fields, write_notice_if_needed, ExtensionDistribution, ExtensionKind,
+    ExtensionLicenseMetadata,
+};
 use crate::io_safe;
 use crate::text_utils::previous_char_boundary;
 use crate::{app_paths, app_paths::yes_or_no, json::json_escape};
@@ -107,6 +111,7 @@ struct ProviderCatalogEntry {
     package: Option<ArtifactSpec>,
     model_artifacts: &'static [ArtifactSpec],
     labels: &'static [LabelMapping],
+    license: ExtensionLicenseMetadata,
 }
 
 #[derive(Debug)]
@@ -262,6 +267,16 @@ const OPENAI_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     package: Some(OPENAI_PACKAGE_ARTIFACT),
     model_artifacts: &OPENAI_MODEL_ARTIFACTS,
     labels: &OPENAI_LABEL_MAPPINGS,
+    license: ExtensionLicenseMetadata {
+        target: OPENAI_PRIVACY_TARGET,
+        kind: ExtensionKind::Provider,
+        source_url: "https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635",
+        license: "Apache-2.0",
+        distribution: ExtensionDistribution::DownloadedArtifact,
+        bundled: false,
+        network_default: true,
+        notice: "OpenAI Privacy Filter provider downloads Apache-2.0 model/source artifacts from pinned URLs and verifies SHA-256 before use; it is not part of the MIT core.",
+    },
 };
 
 const MLX_MODEL_ARTIFACTS: [ArtifactSpec; 6] = [
@@ -313,6 +328,16 @@ const MLX_PROVIDER_ENTRY: ProviderCatalogEntry = ProviderCatalogEntry {
     package: None,
     model_artifacts: &MLX_MODEL_ARTIFACTS,
     labels: &OPENAI_LABEL_MAPPINGS,
+    license: ExtensionLicenseMetadata {
+        target: OPENAI_PRIVACY_MLX_TARGET,
+        kind: ExtensionKind::Provider,
+        source_url: "https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0",
+        license: "Apache-2.0",
+        distribution: ExtensionDistribution::DownloadedArtifact,
+        bundled: false,
+        network_default: true,
+        notice: "MLX privacy-filter provider downloads a pinned MLX conversion of the Apache-2.0 OpenAI Privacy Filter model and verifies SHA-256 before use; it is not part of the MIT core.",
+    },
 };
 
 const PROVIDER_CATALOG: [ProviderCatalogEntry; 2] = [OPENAI_PROVIDER_ENTRY, MLX_PROVIDER_ENTRY];
@@ -590,6 +615,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
     match args.command.as_ref() {
         Some(ProviderSubcommand::Enable { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let bundle = bundle_root_for_entry(entry)?;
             let installed_now = if is_bundle_installed(entry, &bundle)? {
                 if !has_verified_state(&bundle)? {
@@ -611,6 +637,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
         }
         Some(ProviderSubcommand::Install { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let outcome = install_target(entry)?;
             let message = format!(
                 "resolved target: {}\ninstalled: {}\nverified: yes\npath: {}\n",
@@ -626,6 +653,7 @@ pub fn run_provider_command(args: &ProviderArgs) -> Result<i32> {
         }
         Some(ProviderSubcommand::Use { selector }) => {
             let entry = resolve_catalog_entry(selector)?;
+            write_notice_if_needed(entry.license)?;
             let bundle = bundle_root_for_entry(entry)?;
             ensure_ready_bundle(entry, &bundle)?;
             activate_target(entry)?;
@@ -1022,7 +1050,7 @@ fn format_provider_list() -> Result<String> {
             .map(|target| entry.target == target || entry.legacy_targets.contains(&target.as_str()))
             .unwrap_or(false);
         output.push_str(&format!(
-            "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}",
+            "- {}  adapter={}  mode={}  support={}  trust={}  installed={}  verified={}  active={}  {}",
             entry.target,
             entry.adapter.display_name(),
             entry.adapter.detection_mode(),
@@ -1031,6 +1059,7 @@ fn format_provider_list() -> Result<String> {
             yes_or_no(installed),
             yes_or_no(verified),
             yes_or_no(active),
+            format_registry_fields(entry.license),
         ));
         output.push('\n');
     }
@@ -2478,7 +2507,7 @@ impl<'a> JsonParser<'a> {
     }
 }
 
-fn sha256_hex_of_path(path: &Path) -> Result<String> {
+pub(crate) fn sha256_hex_of_path(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path).map_err(|error| {
         RedactError::Config(format!(
             "Cannot open '{}' for SHA-256: {}",
@@ -2504,7 +2533,7 @@ fn sha256_hex_of_path(path: &Path) -> Result<String> {
     Ok(hasher.finalize_hex())
 }
 
-fn sha256_hex_of_bytes(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex_of_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize_hex()

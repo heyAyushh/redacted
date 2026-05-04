@@ -6,6 +6,8 @@ mod detector;
 mod document;
 mod errors;
 mod except;
+mod extension;
+mod external_detector;
 mod io_safe;
 mod json;
 mod policy;
@@ -20,9 +22,12 @@ use config::Config;
 use detector::DetectorRegistry;
 use document::DocumentSession;
 use errors::{RedactError, EXIT_FINDINGS, EXIT_SUCCESS};
+use external_detector::{ExternalDetectorDirectoryScan, ExternalDetectorSession};
 use policy::{FindingAction, FindingDecision};
 use provider::ProviderSession;
 use report::{FileResult, FileStatus, FindingReport, Summary};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -46,6 +51,9 @@ fn run() -> errors::Result<i32> {
     if let Some(ref provider_args) = cli_args.provider {
         return provider::run_provider_command(provider_args);
     }
+    if let Some(ref detector_args) = cli_args.external_detector {
+        return external_detector::run_detector_command(detector_args);
+    }
     if let Some(ref document_args) = cli_args.document {
         return document::run_document_command(document_args);
     }
@@ -64,6 +72,7 @@ fn run() -> errors::Result<i32> {
 
     let config = Config::from_cli(&cli_args)?;
     ensure_document_adapter_uses_input_path(&config)?;
+    ensure_external_detectors_uses_input_path(&config)?;
     let except_rules =
         if let Some(path) = except::resolve_scan_except_path(config.except_file.as_deref())? {
             except::load_rules(&path)?
@@ -105,6 +114,15 @@ fn run() -> errors::Result<i32> {
         } else {
             None
         };
+        let external_detector_session = if external_detector::scan_enabled(
+            config.external_detectors,
+            &config.allow_patterns,
+            &config.deny_patterns,
+        )? {
+            Some(external_detector::start_scan_session()?)
+        } else {
+            None
+        };
 
         if path.is_file() {
             return process_single_file(
@@ -113,6 +131,7 @@ fn run() -> errors::Result<i32> {
                 &registry,
                 provider_session.as_mut(),
                 document_session.as_mut(),
+                external_detector_session.as_ref(),
                 &except_rules,
             );
         } else if path.is_dir() {
@@ -122,6 +141,7 @@ fn run() -> errors::Result<i32> {
                 &registry,
                 provider_session.as_mut(),
                 document_session.as_mut(),
+                external_detector_session.as_ref(),
                 &except_rules,
             );
         } else {
@@ -168,6 +188,18 @@ fn ensure_document_adapter_uses_input_path(config: &Config) -> errors::Result<()
     Ok(())
 }
 
+fn ensure_external_detectors_uses_input_path(config: &Config) -> errors::Result<()> {
+    if config.external_detectors == Some(true) && config.input.is_none() {
+        return Err(RedactError::Usage(
+            "Cannot use --detectors without --input <PATH>.\n\
+             External detector engines scan files and directories.\n  \
+             redacted --detectors --input <PATH>"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn start_provider_session_if_enabled(config: &Config) -> errors::Result<Option<ProviderSession>> {
     if config.privacy_filter {
         Ok(Some(provider::start_active_session()?))
@@ -176,37 +208,65 @@ fn start_provider_session_if_enabled(config: &Config) -> errors::Result<Option<P
     }
 }
 
+struct ScanEngines<'a> {
+    provider_session: Option<&'a mut ProviderSession>,
+    external_detector_session: Option<&'a ExternalDetectorSession>,
+    external_directory_scan: Option<&'a ExternalDetectorDirectoryScan>,
+}
+
 fn collect_findings(
     text: &str,
+    path: Option<&Path>,
     config: &Config,
     registry: &DetectorRegistry,
-    provider_session: Option<&mut ProviderSession>,
+    engines: ScanEngines<'_>,
 ) -> errors::Result<Vec<detector::Finding>> {
-    let Some(session) = provider_session else {
+    let external_findings_allowed = engines.external_detector_session.is_some_and(|session| {
+        external_detector::findings_allowed(session, &config.allow_patterns, &config.deny_patterns)
+    });
+    if engines.provider_session.is_none() && !external_findings_allowed {
         return Ok(registry.detect_all(text));
-    };
+    }
 
     let mut findings = registry.detect_all_unmerged(text);
-    let provider_findings = provider::detect_with_session(
-        session,
-        text,
-        &config.allow_patterns,
-        &config.deny_patterns,
-    )?;
-    findings.extend(provider_findings);
+    if let Some(session) = engines.provider_session {
+        let provider_findings = provider::detect_with_session(
+            session,
+            text,
+            &config.allow_patterns,
+            &config.deny_patterns,
+        )?;
+        findings.extend(provider_findings);
+    }
+    if external_findings_allowed {
+        if let (Some(path), Some(session)) = (path, engines.external_detector_session) {
+            if let Some(directory_scan) = engines.external_directory_scan {
+                findings.extend(external_detector::detect_path_from_directory_scan(
+                    directory_scan,
+                    path,
+                    text,
+                ));
+            } else {
+                findings.extend(external_detector::detect_path_with_session(
+                    session, path, text,
+                )?);
+            }
+        }
+    }
     Ok(detector::merge_findings(findings))
 }
 
 fn decide_findings(
     text: &str,
+    path: Option<&Path>,
     config: &Config,
     registry: &DetectorRegistry,
-    provider_session: Option<&mut ProviderSession>,
+    engines: ScanEngines<'_>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<Vec<FindingDecision>> {
     Ok(policy::decide_findings(
         text,
-        collect_findings(text, config, registry, provider_session)?,
+        collect_findings(text, path, config, registry, engines)?,
         &config.retain_detectors,
         &config.retain_literals,
         &config.except_detectors,
@@ -246,7 +306,18 @@ fn process_text(
     _document_session: Option<&mut DocumentSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
-    let decisions = decide_findings(text, config, registry, provider_session, except_rules)?;
+    let decisions = decide_findings(
+        text,
+        None,
+        config,
+        registry,
+        ScanEngines {
+            provider_session,
+            external_detector_session: None,
+            external_directory_scan: None,
+        },
+        except_rules,
+    )?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -354,6 +425,24 @@ fn read_scannable_text(
     })
 }
 
+fn external_detector_scan_candidate(path: &Path, config: &Config) -> bool {
+    if config.document_adapter && document::supports_path(path) {
+        return true;
+    }
+    if matches!(config.binary, BinaryMode::BestEffort) {
+        return true;
+    }
+    !file_looks_binary(path).unwrap_or(false)
+}
+
+fn file_looks_binary(path: &Path) -> std::io::Result<bool> {
+    const BINARY_SAMPLE_SIZE: usize = 8192;
+    let mut file = fs::File::open(path)?;
+    let mut sample = [0_u8; BINARY_SAMPLE_SIZE];
+    let bytes_read = file.read(&mut sample)?;
+    Ok(io_safe::is_binary(&sample[..bytes_read]))
+}
+
 fn document_output_path(output_dir: &str, relative: &Path) -> PathBuf {
     let mut path = Path::new(output_dir).join(relative);
     let current_name = path
@@ -371,6 +460,7 @@ fn process_single_file(
     registry: &DetectorRegistry,
     provider_session: Option<&mut ProviderSession>,
     document_session: Option<&mut DocumentSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     if config.document_adapter && config.in_place && document::supports_path(path) {
@@ -405,7 +495,18 @@ fn process_single_file(
     };
     let text = loaded.text;
 
-    let decisions = decide_findings(&text, config, registry, provider_session, except_rules)?;
+    let decisions = decide_findings(
+        &text,
+        Some(path),
+        config,
+        registry,
+        ScanEngines {
+            provider_session,
+            external_detector_session,
+            external_directory_scan: None,
+        },
+        except_rules,
+    )?;
     let reportable = reportable_findings(&decisions);
     let redactions = redacted_findings(&decisions);
     let finding_count = reportable.len();
@@ -476,6 +577,7 @@ fn process_directory(
     registry: &DetectorRegistry,
     mut provider_session: Option<&mut ProviderSession>,
     mut document_session: Option<&mut DocumentSession>,
+    external_detector_session: Option<&ExternalDetectorSession>,
     except_rules: &[except::ExceptRule],
 ) -> errors::Result<i32> {
     // Directory mode requires --output, --in-place, --dry-run, --summary, or --report-json
@@ -509,6 +611,47 @@ fn process_directory(
     };
 
     let entries = traverse::collect_files(dir_path, &traverse_config)?;
+    let external_scan_paths: Vec<PathBuf> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            traverse::FileEntry::Eligible { path, .. } => {
+                external_detector_scan_candidate(path, config).then(|| path.clone())
+            }
+            traverse::FileEntry::Skipped { .. } => None,
+        })
+        .collect();
+    let (external_directory_scan, external_directory_error) =
+        if let Some(session) = external_detector_session {
+            if external_detector::findings_allowed(
+                session,
+                &config.allow_patterns,
+                &config.deny_patterns,
+            ) {
+                match external_detector::detect_directory_with_session(
+                    session,
+                    dir_path,
+                    &external_scan_paths,
+                ) {
+                    Ok(scan) => (Some(scan), None),
+                    Err(error) => (None, Some(error.to_string())),
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+    if let Some(error) = external_directory_error.as_ref() {
+        eprintln!(
+            "Warning: external detector directory scan failed; continuing with native detectors only. {}",
+            error
+        );
+    }
+    let external_detector_session_for_files = if external_directory_error.is_some() {
+        None
+    } else {
+        external_detector_session
+    };
 
     let mut results: Vec<FileResult> = Vec::new();
     let mut total_findings = 0;
@@ -553,9 +696,14 @@ fn process_directory(
 
                 let decisions = match decide_findings(
                     &text,
+                    Some(&path),
                     config,
                     registry,
-                    provider_session.as_deref_mut(),
+                    ScanEngines {
+                        provider_session: provider_session.as_deref_mut(),
+                        external_detector_session: external_detector_session_for_files,
+                        external_directory_scan: external_directory_scan.as_ref(),
+                    },
                     except_rules,
                 ) {
                     Ok(decisions) => decisions,

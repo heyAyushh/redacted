@@ -5,6 +5,7 @@
 ``` 
 redacted [OPTIONS]
 redacted provider <COMMAND> [OPTIONS]
+redacted detector <COMMAND> [OPTIONS]
 redacted document <COMMAND> [OPTIONS]
 redacted benchmark --input <PATH> [OPTIONS]
 echo "text" | redacted [OPTIONS]
@@ -12,6 +13,7 @@ echo "text" | redacted [OPTIONS]
 
 The binary is called `redacted`. Normal scans still use flags directly.
 `redacted provider ...` manages optional privacy-filter bundles.
+`redacted detector ...` manages optional external detector engines.
 `redacted document ...` manages optional document adapters.
 `redacted benchmark ...` runs repeatable local benchmark scans.
 
@@ -41,6 +43,8 @@ If none of the above are provided and stdin is a terminal (not piped), the tool 
 | `--report-json` | — | Write redacted content normally **and** emit a structured JSON report to stderr |
 | `--replacement` | `<STRING>` | Custom replacement string instead of the default `[REDACTED:<TYPE>]` marker |
 | `--privacy-filter` | — | Run the active privacy-filter provider as one extra optional detection pass |
+| `--detectors` | — | Run active external detector engines for this `--input` scan |
+| `--no-detectors` | — | Disable external detector engines for this scan, even when the detector default is on |
 | `--document-adapter` | — | Run the active document adapter for supported non-text files (`.pdf` in v1) |
 
 ### Default Replacement Format
@@ -143,7 +147,7 @@ Current support levels:
 | `redacted provider install <provider-or-target>` | Download and verify a bundle without activating it |
 | `redacted provider use <provider-or-target>` | Switch the active provider to an installed, verified bundle |
 | `redacted provider current` | Show the active exact target |
-| `redacted provider list` | Show aliases, exact targets, and local install state |
+| `redacted provider list` | Show aliases, exact targets, license metadata, and local install state |
 | `redacted provider verify [<provider-or-target> \| --all]` | Re-hash installed bundle artifacts |
 | `redacted provider disable` | Clear the active provider selection |
 
@@ -177,15 +181,57 @@ Notes:
 
 ---
 
+## Detector Commands
+
+Use `redacted detector ...` to bind, verify, and activate optional external
+secret detector engines. Native detectors always run; `--detectors` adds active
+external engines for `--input` scans.
+
+Current built-in target:
+
+- `trufflehog/secrets-v1` backed by the local TruffleHog CLI
+
+| Command | Description |
+|---------|-------------|
+| `redacted detector install <detector-or-target>` | Bind to a local executable and verify its SHA-256 |
+| `redacted detector use <detector-or-target>` | Add an installed detector engine to the active set |
+| `redacted detector current` | Show active external detectors and default mode |
+| `redacted detector list` | Show aliases, exact targets, license metadata, and local install state |
+| `redacted detector verify [<detector-or-target> \| --all]` | Re-check installed detector executables |
+| `redacted detector disable [<detector-or-target> \| --all]` | Remove detector engines from the active set |
+| `redacted detector default <on\|off>` | Persist whether active external detectors run by default for `--input` scans |
+
+Examples:
+
+```bash
+redacted detector install trufflehog
+redacted detector use trufflehog
+redacted --detectors --input repo/
+redacted detector default on
+redacted --input repo/
+redacted --no-detectors --input repo/
+```
+
+Notes:
+
+- `trufflehog` resolves to `trufflehog/secrets-v1`.
+- `install` does not download TruffleHog; install it separately and keep it in `PATH`.
+- Scans run `trufflehog filesystem <path> --json --no-verification --no-update --no-color`.
+- External detectors require `--input`; they do not run for `--text` or stdin.
+- TruffleHog is AGPL-3.0 and remains an external tool, not vendored into the MIT core.
+
+---
+
 ## Document Commands
 
 Use `redacted document ...` to install, verify, and switch optional
 document adapters. This path is explicit and lower-trust than the
 default Rust-only detector path because it wraps an external extraction runtime.
 
-Current built-in target:
+Current built-in targets:
 
-- `pdf-inspector/local-v1` backed by local `pdftotext`
+- `poppler/pdftotext-v1` backed by local `pdftotext`
+- `firecrawl/pdf-inspector-v1` backed by local Firecrawl `pdf2md`
 
 | Command | Description |
 |---------|-------------|
@@ -193,16 +239,17 @@ Current built-in target:
 | `redacted document install <adapter-or-target>` | Install and verify without activating |
 | `redacted document use <adapter-or-target>` | Switch the active adapter to an installed, verified target |
 | `redacted document current` | Show the active exact target |
-| `redacted document list` | Show aliases, exact targets, and local install state |
+| `redacted document list` | Show aliases, exact targets, license metadata, and local install state |
 | `redacted document verify [<adapter-or-target> \| --all]` | Re-verify installed adapter assets and runtime prerequisites |
 | `redacted document disable` | Clear the active adapter selection |
 
 Examples:
 
 ```bash
-redacted document enable pdf-inspector
-redacted document install pdf-inspector/local-v1
-redacted document use pdf-inspector
+redacted document enable pdf
+redacted document enable firecrawl-pdf
+redacted document install poppler/pdftotext-v1
+redacted document use pdf
 redacted document current
 redacted document verify --all
 redacted document disable
@@ -210,7 +257,10 @@ redacted document disable
 
 Notes:
 
-- `pdf-inspector` resolves to `pdf-inspector/local-v1`
+- `pdf` resolves to `poppler/pdftotext-v1`
+- `firecrawl-pdf` resolves to `firecrawl/pdf-inspector-v1`
+- `pdf` is the short human alias for the PDF document type; exact targets name
+  the adapter implementation.
 - `redacted --document-adapter ...` never installs adapters during a scan
 - if no active adapter is configured, `--document-adapter` fails fast with the next setup command
 - `--in-place` is blocked for document-adapter extracted files; use `--output` for persisted output

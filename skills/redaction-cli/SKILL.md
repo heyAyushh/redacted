@@ -10,7 +10,7 @@ Use this skill whenever you are working on the `redacted` binary crate — addin
 
 `redacted` is a production-grade, zero-dependency Rust CLI that scans text and files for secrets and personally identifiable information (PII), replaces matches with safe placeholders, and optionally produces structured JSON reports. It is designed for CI pipelines, log sanitisation, and pre-publish checks.
 
-The default scan path is Rust-only, offline, dependency-free, and does not download models. Optional privacy-filter providers and document adapters are explicit external runtime boundaries. They are installed separately, verified separately, and only run when their feature flag is passed.
+The default scan path is Rust-only, offline, dependency-free, and does not download models. Optional privacy-filter providers, external detectors, and document adapters are explicit external runtime boundaries. They are installed separately, verified separately, and only run when their feature flag or persisted default is enabled.
 
 ---
 
@@ -30,8 +30,8 @@ These rules are non-negotiable. Every change must satisfy all of them.
 | S8 | **Binary files are skipped by default.** `BinaryMode::Skip` is the default; detection uses null-byte and non-text-byte heuristics in `io_safe::is_binary`. |
 | S9 | **Error messages must never contain secret values.** Paths and byte counts are fine; matched content is not. |
 | S10 | **Custom patterns are bounded.** The mini-regex engine in `detector/custom.rs` caps repetitions at 4096 and uses non-backtracking greedy matching to prevent ReDoS. |
-| S11 | **Scans never install or download providers/adapters.** Downloads only happen through explicit setup commands such as `redacted provider install ...`, `redacted provider enable ...`, or document-adapter equivalents. |
-| S12 | **Provider and document runners are lower-trust external boundaries.** Validate bundle-relative paths, verify artifacts by size and SHA-256, keep stderr hidden by default, and never let external runners own final redaction output. |
+| S11 | **Scans never install or download providers/adapters/detectors.** Downloads only happen through explicit setup commands such as `redacted provider install ...`, `redacted provider enable ...`, or document-adapter equivalents. External detectors bind to local executables and must not download during scans. |
+| S12 | **Provider, external detector, and document runners are lower-trust external boundaries.** Validate paths, verify artifacts or executables by size/SHA-256 where applicable, keep stderr hidden by default, and never let external runners own final redaction output. |
 
 ---
 
@@ -49,6 +49,7 @@ src/
 │   ├── pii.rs         Built-in PII detectors (Email, Phone, IPv4/IPv6 scanners → unified `IP` / `[REDACTED:IP]`, Path, CreditCard, SSN)
 │   └── custom.rs      User-supplied patterns via --pattern; mini-regex compiler + matcher
 ├── provider.rs        Optional privacy-filter provider catalog, install/verify/use, runner session ABI
+├── external_detector.rs Optional external detector engines such as TruffleHog
 ├── document.rs        Optional document-adapter catalog, install/verify/use, document extraction
 ├── redact.rs          apply_redactions() — replaces finding spans with placeholders
 ├── io_safe.rs         Atomic writes, binary detection, stdin piping, file reads with size limits
@@ -81,9 +82,10 @@ These defaults are baked into `CliArgs::default()` and must not be weakened:
 | `max_depth` | 256 | Prevents infinite recursion from symlink loops |
 | Replacement | `[REDACTED:<TYPE>]` | Makes it clear what was removed and why |
 | Privacy filter | `false` | Optional provider pass is off unless `--privacy-filter` is passed |
+| External detectors | `false` | Optional external detector engines are off unless `--detectors` is passed or `redacted detector default on` is set |
 | Document adapter | `false` | Optional document extraction is off unless `--document-adapter` is passed |
 
-Provider and document-adapter setup state is persistent, but scan-time behavior is still opt-in by flag.
+Provider, external-detector, and document-adapter setup state is persistent. External detectors can also have a persistent default, but only after explicit `redacted detector default on`.
 
 ---
 
@@ -259,7 +261,17 @@ redacted document enable pdf
 redacted --input report.pdf --document-adapter
 ```
 
+Firecrawl PDF Inspector is available as a separate adapter:
+
+```bash
+redacted document enable firecrawl-pdf
+redacted --input report.pdf --document-adapter
+```
+
 Document adapters extract text first. The core detector, merge, policy, redaction, and reporting pipeline still belongs to `redacted`.
+The `pdf` alias is the short user-facing selector for the PDF document type;
+exact targets such as `poppler/pdftotext-v1` and
+`firecrawl/pdf-inspector-v1` name the adapter implementation.
 
 ---
 
@@ -327,6 +339,7 @@ Rules:
 - `use` switches only to an installed, verified target.
 - Aliases must resolve to pinned exact targets and print the resolved target.
 - `--privacy-filter` fails fast if no active provider is configured.
+- Provider catalog entries must declare extension license metadata.
 - Provider responses contain labels and byte spans only. They must not contain raw matched text or redacted text.
 - Core maps provider labels into canonical detector names and applies existing policy/report/redaction logic once after merging findings.
 - Generative runtimes are not privacy-filter providers unless they run a real detector with verified span output.
@@ -364,10 +377,70 @@ Rules:
 - In-place rewrite is blocked for document-adapter extracted files.
 - Adapter runner paths must be validated as bundle-relative child paths.
 - Adapter output is extracted text only; `redacted` still owns detection and redaction.
+- Document adapter catalog entries must declare extension license metadata.
+- Keep document-type aliases short. Use exact targets to distinguish swappable
+  adapter implementations.
+
+## 15. Optional External Detector Architecture
+
+Use `detector` as the public CLI noun for external secret-scanner engines. Native
+detectors still live in `src/detector/`; external detectors are adapters around
+separate executables.
+
+Supported targets:
+
+| Alias | Exact target | Status |
+|-------|--------------|--------|
+| `trufflehog` | `trufflehog/secrets-v1` | Supported external engine |
+
+Detector commands:
+
+```bash
+redacted detector install <detector-or-target>
+redacted detector use <detector-or-target>
+redacted detector current
+redacted detector list
+redacted detector verify [<detector-or-target> | --all]
+redacted detector disable [<detector-or-target> | --all]
+redacted detector default <on|off>
+```
+
+Rules:
+
+- `install` must not download TruffleHog; it binds to a local executable in `PATH`.
+- `use` adds an installed, verified target to the active set.
+- `--detectors` runs native detectors plus all active external detectors for `--input` scans.
+- `--no-detectors` disables external detectors for one scan.
+- `redacted detector default on` makes active external detectors run by default for `--input` scans.
+- TruffleHog must run with `--json --no-verification --no-update --no-color`.
+- External detector errors must not include raw matched text.
+- Core maps external detector results into normal `Finding` values and still owns policy/report/redaction logic.
+- External detector catalog entries must declare extension license metadata.
+
+## 16. Extension License Checklist
+
+Core remains MIT. Optional extension entries must include:
+
+- target
+- kind: `provider`, `detector`, or `document`
+- source URL
+- license
+- distribution: `external-binary`, `downloaded-artifact`, `vendored-source`, or `linked-library`
+- bundled: `true` or `false`
+- network default: `true` or `false`
+- attribution/notice text
+
+Rules:
+
+- External binaries do not change the core license when they remain separate user-installed tools.
+- Downloaded artifacts need pinned URLs, byte sizes, SHA-256 hashes, and a notice before install/use.
+- Vendored source or linked libraries require explicit maintainer approval.
+- Unknown-license extensions must stay disabled by default.
+- Update `docs/extension-licenses.md`, README attribution, and tests whenever adding an extension.
 
 ---
 
-## 15. Release Checklist
+## 17. Release Checklist
 
 1. Update `version` in `Cargo.toml`.
 2. Run the full test suite: `cargo test --locked`.

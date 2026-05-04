@@ -78,6 +78,31 @@ redacted --privacy-filter --input logs/
 
 ---
 
+## Optional External Detectors
+
+`redacted` can also run active external detector engines for `--input` scans.
+This is off by default and separate from the Rust-only native detector path.
+
+TruffleHog is the first supported external detector engine:
+
+```bash
+# One-time setup: binds to your local trufflehog executable and hashes it
+redacted detector install trufflehog
+redacted detector use trufflehog
+
+# Run native detectors plus active external detectors for this scan
+redacted --detectors --input repo/
+
+# Optional: make active external detectors run by default for --input scans
+redacted detector default on
+```
+
+External detector scans run TruffleHog with JSON output, `--no-verification`,
+`--no-update`, and `--no-color`. `redacted` still owns final masking, reports,
+retain/except policy, and file writes.
+
+---
+
 ## Key Features
 
 - **Zero dependencies in the core binary** — uses only the Rust standard library; no crates.io supply-chain risk in the default scan path.
@@ -89,6 +114,7 @@ redacted --privacy-filter --input logs/
 - **Structured output** — `--format json` and `--report-json` produce machine-readable reports with masked samples (secrets are never leaked in reports).
 - **Extensible** — add custom patterns via `--pattern NAME=REGEX` or a TOML config file.
 - **Optional privacy-filter pass** — add a second local detection pass from an installed provider bundle with `--privacy-filter`.
+- **Optional external detectors** — add active external secret engines such as TruffleHog with `--detectors`.
 
 ---
 
@@ -142,8 +168,15 @@ redacted provider enable openai
 # Run the extra provider-backed pass
 redacted --input logs/ --output cleaned/ --summary --privacy-filter
 
+# Enable TruffleHog as an external detector once
+redacted detector install trufflehog
+redacted detector use trufflehog
+
+# Run active external detectors for this scan
+redacted --input logs/ --summary --detectors
+
 # Enable the PDF document adapter once
-redacted document enable pdf-inspector
+redacted document enable pdf
 
 # Scan a PDF through the document adapter path
 redacted --input report.pdf --document-adapter
@@ -310,20 +343,45 @@ marked verified.
 Provider Python dependencies are installed with pip `--require-hashes` from
 checked-in lock files under `provider-locks/`.
 
-### TruffleHog Detectors
+### External Detector Engines
 
-`redacted` does not bundle
-[TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) detectors
-today. TruffleHog is a broad Go-based credential scanner under AGPL-3.0 with a
-large detector tree and many verification-oriented integrations. `redacted` keeps
-the default path as a small MIT-licensed Rust binary with no crates.io
-dependencies and no network calls.
+External detectors are optional secret-scanner engines outside the hardened
+Rust-only core. Native detectors always run; `--detectors` adds active external
+engines for `--input` scans.
 
-The practical split is:
+Current built-in external detector target:
 
-- Use `redacted` when you want fast local redaction, masked reports, and safe file rewrites.
-- Use TruffleHog when you want broad leaked-credential discovery and service-backed verification.
-- If this project adds TruffleHog-style coverage later, it should be an explicit optional adapter/provider boundary, not code imported into the hardened core.
+| Alias | Exact target | Status | What it runs |
+|-------|--------------|--------|--------------|
+| `trufflehog` | `trufflehog/secrets-v1` | Supported external engine | Local [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) CLI through `trufflehog filesystem --json --no-verification --no-update --no-color` |
+
+Commands:
+
+```bash
+redacted detector install trufflehog
+redacted detector use trufflehog
+redacted detector current
+redacted detector list
+redacted detector verify --all
+redacted detector default on
+redacted detector disable trufflehog
+```
+
+Scan examples:
+
+```bash
+redacted --detectors --input repo/
+redacted --no-detectors --input repo/
+```
+
+Important behavior:
+
+- `redacted detector install trufflehog` does not download TruffleHog; it binds to the local `trufflehog` executable in `PATH` and pins its SHA-256.
+- `redacted --detectors ...` requires `--input`; external detectors do not run for `--text` or stdin.
+- `redacted detector default on` makes active external detectors run by default for `--input` scans.
+- `--no-detectors` disables external detectors for one scan even when the default is on.
+- TruffleHog is AGPL-3.0 and remains an external tool; it is not vendored into the MIT Rust core.
+- Network verification is disabled by default with TruffleHog `--no-verification`.
 
 ---
 
@@ -332,16 +390,27 @@ The practical split is:
 `redacted` can also run an optional document extraction step for supported non-text files.
 
 - Feature flag: `--document-adapter`
-- Current built-in alias: `pdf-inspector`
-- Exact target: `pdf-inspector/local-v1`
-- Runtime: local `pdftotext`
+- Current built-in aliases: `pdf`, `firecrawl-pdf`
+- Current exact targets: `poppler/pdftotext-v1`, `firecrawl/pdf-inspector-v1`
+- Runtime: local `pdftotext` or local Firecrawl `pdf2md`
+
+The short `pdf` alias is the human path for the PDF document type. Exact targets
+name the adapter implementation, so the PDF adapter can be switched later
+without making humans type long names.
 
 When `--document-adapter` is enabled and the input is a supported document type (`.pdf` in v1), `redacted` extracts text first and then applies the same detector, merge, retain/except, reporting, and redaction pipeline.
 
 Setup flow:
 
 ```bash
-redacted document enable pdf-inspector
+redacted document enable pdf
+redacted --input report.pdf --document-adapter
+```
+
+Switch to Firecrawl PDF Inspector when its `pdf2md` CLI is installed locally:
+
+```bash
+redacted document enable firecrawl-pdf
 redacted --input report.pdf --document-adapter
 ```
 
@@ -350,7 +419,8 @@ Switching and lifecycle:
 ```bash
 redacted document list
 redacted document current
-redacted document use pdf-inspector/local-v1
+redacted document use poppler/pdftotext-v1
+redacted document use firecrawl/pdf-inspector-v1
 redacted document verify --all
 redacted document disable
 ```
@@ -412,6 +482,8 @@ Important behavior:
 | `--summary` | Print summary to stderr |
 | `--config <PATH>` | TOML configuration file |
 | `--privacy-filter` | Run the active privacy-filter provider as one extra detection pass |
+| `--detectors` | Run active external detector engines for this scan |
+| `--no-detectors` | Disable external detector engines for this scan |
 | `--document-adapter` | Run the active document adapter for supported non-text inputs |
 
 ### Other
@@ -445,6 +517,28 @@ redacted provider use openai
 redacted provider verify --all
 ```
 
+### Detector Commands
+
+```bash
+redacted detector install <detector-or-target>
+redacted detector use <detector-or-target>
+redacted detector current
+redacted detector list
+redacted detector verify [<detector-or-target> | --all]
+redacted detector disable [<detector-or-target> | --all]
+redacted detector default <on|off>
+```
+
+Examples:
+
+```bash
+redacted detector install trufflehog
+redacted detector use trufflehog
+redacted detector default on
+redacted detector verify --all
+redacted --detectors --input repo/
+```
+
 ### Document Commands
 
 ```bash
@@ -460,9 +554,10 @@ redacted document disable
 Examples:
 
 ```bash
-redacted document enable pdf-inspector
-redacted document install pdf-inspector/local-v1
-redacted document use pdf-inspector
+redacted document enable pdf
+redacted document enable firecrawl-pdf
+redacted document install poppler/pdftotext-v1
+redacted document use pdf
 redacted document verify --all
 ```
 
@@ -551,20 +646,26 @@ See `docs/` for full documentation and `skills/redaction-cli/SKILL.md` for contr
 ## Attribution
 
 `redacted` itself is MIT licensed and the core CLI uses only the Rust standard
-library. Optional provider and document-adapter setup commands may install or
-call third-party tools only after you explicitly enable them.
+library. Optional providers, document adapters, and external detectors carry
+their own license metadata and remain separate from the MIT core.
 
-| Area | Used for | Upstream |
-|------|----------|----------|
-| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | Rust standard library |
-| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
-| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
-| Provider Python environments | Local model loading and span detection inside provider bundles | Hash-locked packages listed in `provider-locks/` |
-| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | Local `pdftotext` from Poppler |
+| Area | Used for | License | Distribution | Upstream |
+|------|----------|---------|--------------|----------|
+| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | MIT | bundled core | Rust standard library |
+| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | Apache-2.0 | downloaded artifact | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
+| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | Apache-2.0 | downloaded artifact | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
+| Provider Python environments | Local model loading and span detection inside provider bundles | package-specific | downloaded artifacts | Hash-locked packages listed in `provider-locks/` |
+| External detector engine | Optional `trufflehog/secrets-v1` secret-scanner pass | AGPL-3.0 | external binary | Local [TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) CLI, not vendored |
+| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | GPL-2.0-or-later | external binary | Local `pdftotext` from [Poppler](https://poppler.freedesktop.org/) |
+| Firecrawl PDF adapter | Optional PDF-to-Markdown extraction before the normal scan pipeline | MIT | external binary | Local `pdf2md` from [Firecrawl PDF Inspector](https://github.com/firecrawl/pdf-inspector), not linked or vendored |
 
 Third-party models, tools, and Python packages keep their own upstream licenses.
 The checked-in lock files and provider catalog pin the exact downloaded artifacts
 with URLs, byte sizes, and SHA-256 hashes.
+
+The extension license policy and contribution checklist live in
+[docs/extension-licenses.md](docs/extension-licenses.md). The `pdf` alias names
+the document type; exact targets name the active adapter implementation.
 
 ---
 
