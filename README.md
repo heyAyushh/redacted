@@ -66,8 +66,10 @@ redacted --privacy-filter --text "Jane Doe emailed jane@example.com from 411 111
 Provider scans use the local installed bundle. They do not call the OpenAI API.
 The first run can be slower because the local model has to load.
 
-Apple Silicon users can try the experimental MLX runtime for the same OpenAI
-Privacy Filter model:
+Apple Silicon users can try the experimental MLX runtime for the same
+[OpenAI Privacy Filter model](https://huggingface.co/openai/privacy-filter/tree/main/original)
+through the pinned
+[mlx-community/openai-privacy-filter-4bit conversion](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0):
 
 ```bash
 redacted provider enable mlx
@@ -210,8 +212,8 @@ Current built-in aliases and targets:
 
 | Alias | Exact target | Status | What it runs |
 |-------|--------------|--------|--------------|
-| `openai` | `openai/privacy-filter-v1` | Supported | Local OPF runner around the OpenAI Privacy Filter model |
-| `mlx` | `openai/privacy-filter-v1-mlx` | Experimental | Apple MLX runtime for the converted OpenAI Privacy Filter model |
+| `openai` | `openai/privacy-filter-v1` | Supported | Local OPF runner around [OpenAI Privacy Filter original artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original) |
+| `mlx` | `openai/privacy-filter-v1-mlx` | Experimental | Apple MLX runtime for the pinned [mlx-community/openai-privacy-filter-4bit conversion](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) |
 
 ### What It Does
 
@@ -267,20 +269,36 @@ redacted provider disable
 - If no active provider is configured, `--privacy-filter` fails fast with the next exact setup command.
 - The provider bundle is verified when installed and can be re-checked later with `redacted provider verify`.
 - Python runtime dependencies for provider bundles are installed from checked-in hash-locked requirements files.
-- `openai/privacy-filter-v1` is the supported token-span runtime.
-- `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned `mlx-community/openai-privacy-filter-4bit` conversion for local MLX inference.
+- `openai/privacy-filter-v1` is the supported token-span runtime using the [OpenAI Privacy Filter OPF source archive](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635) and [OpenAI Privacy Filter model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original).
+- `openai/privacy-filter-v1-mlx` is experimental, requires Python 3.10+, and downloads the pinned [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0) conversion for local MLX inference.
 - Generative model runtimes are not exposed as privacy-filter providers unless they run a real detector with verified span output.
 
-### MLX Pinning
+### Provider Sources
+
+The `openai` alias resolves to `openai/privacy-filter-v1`, which downloads:
+
+- [OpenAI Privacy Filter OPF source archive](https://github.com/openai/privacy-filter/archive/2e8c95b9771eec29ef61012f6e5e836f9bad7635.tar.gz), pinned to commit `2e8c95b9771eec29ef61012f6e5e836f9bad7635`
+- [OpenAI Privacy Filter original model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original)
+- [OpenAI Privacy Filter original/model.safetensors](https://huggingface.co/openai/privacy-filter/resolve/main/original/model.safetensors?download=1)
+
+The main OpenAI model file is pinned by verification metadata:
+
+```text
+size:   2,798,984,088 bytes
+sha256: 9c262cbe68a0c8a50590a648ef8341a2b7d3be1fa11dfb79893fe0b03ce57b5c
+```
 
 The `mlx` alias resolves to `openai/privacy-filter-v1-mlx`, which downloads
-from `mlx-community/openai-privacy-filter-4bit` at this exact revision:
+from [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0)
+at this exact revision:
 
 ```text
 8b784df48dd38a36b757f50c73d23e5bd38f3db0
 ```
 
-The main model file is `model.safetensors`, pinned to:
+The main MLX model file is
+[model.safetensors](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/blob/8b784df48dd38a36b757f50c73d23e5bd38f3db0/model.safetensors),
+pinned to:
 
 ```text
 size:   790,435,150 bytes
@@ -291,6 +309,21 @@ All provider artifacts are checked by size and SHA-256 before the provider is
 marked verified.
 Provider Python dependencies are installed with pip `--require-hashes` from
 checked-in lock files under `provider-locks/`.
+
+### TruffleHog Detectors
+
+`redacted` does not bundle
+[TruffleHog](https://github.com/trufflesecurity/trufflehog/tree/main) detectors
+today. TruffleHog is a broad Go-based credential scanner under AGPL-3.0 with a
+large detector tree and many verification-oriented integrations. `redacted` keeps
+the default path as a small MIT-licensed Rust binary with no crates.io
+dependencies and no network calls.
+
+The practical split is:
+
+- Use `redacted` when you want fast local redaction, masked reports, and safe file rewrites.
+- Use TruffleHog when you want broad leaked-credential discovery and service-backed verification.
+- If this project adds TruffleHog-style coverage later, it should be an explicit optional adapter/provider boundary, not code imported into the hardened core.
 
 ---
 
@@ -515,6 +548,26 @@ See `docs/` for full documentation and `skills/redaction-cli/SKILL.md` for contr
 
 ---
 
+## Attribution
+
+`redacted` itself is MIT licensed and the core CLI uses only the Rust standard
+library. Optional provider and document-adapter setup commands may install or
+call third-party tools only after you explicitly enable them.
+
+| Area | Used for | Upstream |
+|------|----------|----------|
+| Core CLI | Built-in detectors, masking, reports, file traversal, and writes | Rust standard library |
+| OpenAI provider | Optional `openai/privacy-filter-v1` local privacy-filter pass | [OpenAI Privacy Filter source](https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635), [model artifacts](https://huggingface.co/openai/privacy-filter/tree/main/original), and key Python packages such as `torch`, `tiktoken`, `safetensors`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-requirements.txt` |
+| MLX provider | Optional `openai/privacy-filter-v1-mlx` Apple Silicon privacy-filter pass | [mlx-community/openai-privacy-filter-4bit](https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0), and key Python packages such as `mlx`, `mlx-lm`, `tokenizers`, `safetensors`, `transformers`, `numpy`, and `huggingface_hub` pinned in `provider-locks/openai-privacy-filter-v1-mlx-requirements.txt` |
+| Provider Python environments | Local model loading and span detection inside provider bundles | Hash-locked packages listed in `provider-locks/` |
+| PDF document adapter | Optional PDF text extraction before the normal scan pipeline | Local `pdftotext` from Poppler |
+
+Third-party models, tools, and Python packages keep their own upstream licenses.
+The checked-in lock files and provider catalog pin the exact downloaded artifacts
+with URLs, byte sizes, and SHA-256 hashes.
+
+---
+
 ## License
 
-[MIT](LICENSE)
+`redacted` is released under the [MIT License](LICENSE).

@@ -161,10 +161,36 @@ revision: 8b784df48dd38a36b757f50c73d23e5bd38f3db0
 deps:     provider-locks/openai-privacy-filter-v1-mlx-requirements.txt
 ```
 
+Source URL:
+
+```text
+https://huggingface.co/mlx-community/openai-privacy-filter-4bit/tree/8b784df48dd38a36b757f50c73d23e5bd38f3db0
+```
+
+Current OpenAI model pin:
+
+```text
+target:  openai/privacy-filter-v1
+source:  openai/privacy-filter original artifacts
+runtime: https://github.com/openai/privacy-filter/tree/2e8c95b9771eec29ef61012f6e5e836f9bad7635
+model:   https://huggingface.co/openai/privacy-filter/tree/main/original
+deps:    provider-locks/openai-privacy-filter-v1-requirements.txt
+```
+
+Main OpenAI model artifact:
+
+```text
+file:   original/model.safetensors
+url:    https://huggingface.co/openai/privacy-filter/resolve/main/original/model.safetensors?download=1
+size:   2,798,984,088 bytes
+sha256: 9c262cbe68a0c8a50590a648ef8341a2b7d3be1fa11dfb79893fe0b03ce57b5c
+```
+
 Main MLX model artifact:
 
 ```text
 file:   model.safetensors
+url:    https://huggingface.co/mlx-community/openai-privacy-filter-4bit/resolve/8b784df48dd38a36b757f50c73d23e5bd38f3db0/model.safetensors?download=1
 size:   790,435,150 bytes
 sha256: 0ec7afabebaf35cf8482c73b351af888b75fbe0c4aaed7cdeec57bb6b87b3796
 ```
