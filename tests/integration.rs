@@ -994,6 +994,21 @@ fn external_detector_default_on_respects_allow_pattern_before_readiness() {
 
 #[cfg(unix)]
 #[test]
+fn external_detector_default_on_without_active_detectors_is_noop() {
+    let (config_root, _data_root, envs) = isolated_state_env("detector_default_no_active_noop");
+    let input_path = config_root.join("sample.txt");
+    fs::write(&input_path, "user@example.com").unwrap();
+
+    let (_stdout, stderr, code) = run_with_env(&["detector", "default", "on"], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    let (stdout, stderr, code) = run_with_env(&["--input", input_path.to_str().unwrap()], &envs);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("[REDACTED:EMAIL]"));
+}
+
+#[cfg(unix)]
+#[test]
 fn external_detector_rejects_mixed_disable_selector_and_all() {
     let (_config_root, _data_root, envs) = isolated_state_env("detector_disable_mixed");
     let (_stdout, stderr, code) =

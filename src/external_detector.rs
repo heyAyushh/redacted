@@ -224,7 +224,13 @@ pub fn scan_enabled(
     allow: &[String],
     deny: &[String],
 ) -> Result<bool> {
-    Ok(active_detectors_enabled(override_value)? && detector_allowed(allow, deny))
+    if !active_detectors_enabled(override_value)? || !detector_allowed(allow, deny) {
+        return Ok(false);
+    }
+    if override_value == Some(true) {
+        return Ok(true);
+    }
+    Ok(!load_active_entries()?.is_empty())
 }
 
 pub fn start_scan_session() -> Result<ExternalDetectorSession> {
